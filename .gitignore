@@ -1,0 +1,10 @@
+# Ignore everything at the repo root, then allow back only source.
+# Leading slashes anchor each rule to the root -- without them, "lib/"
+# would also match archive/*/lib/ and drag the archived copies in.
+/*
+!/.gitignore
+!/main.cpp
+!/lib/
+/lib/*
+!/lib/*.h
+!/lib/*.cpp
