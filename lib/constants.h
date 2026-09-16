@@ -75,6 +75,7 @@ inline constexpr int records_per_iter_max = records_per_iter * batch_grow_factor
 inline constexpr unsigned long long rng_seed = 20260826ULL;
 static_assert(n_walkers % n_thread == 0);
 
+inline constexpr int jet_chunk = 0;
 inline constexpr double o_pool_max_gb = 8.0;  // Set cap of maximum amount of data O_pool may hold
 
 // Ansatz parameters

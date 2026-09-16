@@ -189,3 +189,12 @@ inline Jet sqrt(const Jet& a) {
     out.l = fp * a.l + fpp * dot;
     return out;
 }
+
+inline void fma_into(Jet& acc, double w, const Jet& p) {
+    acc.v += w * p.v;
+    for (int i = 0; i < D; i++) acc.g[i] += w * p.g[i];
+    acc.l += w*p.l;
+}
+inline void fma_into(double& acc, double w, double p) {
+    acc += w * p;
+}

@@ -415,6 +415,54 @@ double l2_local(const double* x_shifted, const double* grad, double psi_val) {
 
 }
 
+static void fill_O(const Ansatz& a, Workspace& ws, double S, std::vector<double>& O_out) {
+    std::size_t n_h = a.h_net.params.size();
+    std::size_t n_rho = a.rho_net.params.size();
+    std::size_t n_orb = a.orb_net.params.size();
+
+    if (ws.seed_rho.size() != (std::size_t)K) ws.seed_rho.resize(K);
+    for (int i = 0; i < K; i++) ws.seed_rho[i] = ws.dets[i];
+    a.rho_net.backprop(ws.rho_cache, ws.seed_rho, ws.dtheta_rho, ws.delta_a, ws.delta_b, &ws.dpsi_dxi);
+    for (std::size_t p = 0; p < n_rho; p++) O_out[n_h + p] = ws.dtheta_rho[p]/S;
+
+    ws.dtheta_h.assign(n_h, 0.0);
+    for (int i = 0; i < N; i++) a.h_net.backprop_acc(ws.h_caches[i], ws.dpsi_dxi, ws.dtheta_h, ws.delta_a, ws.delta_b);
+    for (std::size_t p = 0; p < n_h; p++) O_out[p] = ws.dtheta_h[p]/S;
+
+    if (ws.seed_orb.size() != (std::size_t)(K*N)) ws.seed_orb.resize(K*N);
+    ws.dtheta_orb.assign(n_orb, 0.0);
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < K; j++) {
+            for (int k = 0; k < N; k++) {
+                ws.seed_orb[j*N+k] = ws.drho[j] * ws.dets[j] * ws.dMinv[j*(N*N) + i*N + k];
+            }
+        }
+        a.orb_net.backprop_acc(ws.orb_caches[i], ws.seed_orb, ws.dtheta_orb, ws.delta_a, ws.delta_b);
+    }
+    for (std::size_t p = 0; p < n_orb; p++) O_out[n_h + n_rho + p] = ws.dtheta_orb[p]/S;
+
+    double r2 = 0.0;
+    for (int i = 0; i < D; i++) {
+        double c = ws.x_sh[i];
+        r2 += c * c;
+    }
+    double r_env = std::sqrt(r2 + eps_env*eps_env);
+    O_out[n_h+n_rho+n_orb] = -std::exp(a.alpha) * r_env;
+}
+
+void assemble_O(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, std::vector<double>& O_out) {
+    std::size_t n_params = a.n_params();
+    if (O_out.size() != n_params) O_out.resize(n_params);
+
+    psi(x, s, t, a, ws, true);
+
+    double S = 0.0;
+    for (int i = 0; i < K; i++) {
+        S += ws.drho[i] * ws.dets[i];
+    }
+    fill_O(a, ws, S, O_out);
+}
+
 // Log local energy and dlogpsi_d theta_i simultaneously as more computationally efficient
 bool local_E(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, std::vector<double>& O_out, double& E_out) {
     std::size_t n_params = a.n_params();
@@ -527,49 +575,9 @@ bool local_E(const double* x, const double* s, const double* t, const Ansatz& a,
             return false;
         }
     }
-
-    // Now we build O_out
-    std::size_t n_h = a.h_net.params.size();
-    std::size_t n_rho = a.rho_net.params.size();
-    std::size_t n_orb = a.orb_net.params.size();
-
-    // Forward pass on rho already done, follows by evaluating dpsi/drho_k, then backpropapgating to get 1/psi * drho_k/dtheta_i * dpsi/drho_k 
-    if (ws.seed_rho.size() != (std::size_t)K) ws.seed_rho.resize(K);
-    for (int i = 0; i < K; i++) ws.seed_rho[i] = ws.dets[i];
-    a.rho_net.backprop(ws.rho_cache, ws.seed_rho, ws.dtheta_rho, ws.delta_a, ws.delta_b, &ws.dpsi_dxi);
-    for (std::size_t p = 0; p < n_rho; p++) O_out[n_h + p] = ws.dtheta_rho[p]/S;
-    
-    // Take derivatives of h, accumulate derivative of different d/dtheta_k sum_i h(r_i)
-    ws.dtheta_h.assign(n_h, 0.0);
-    for (int i = 0; i < N; i++) a.h_net.backprop_acc(ws.h_caches[i], ws.dpsi_dxi, ws.dtheta_h, ws.delta_a, ws.delta_b);
-    for (std::size_t p = 0; p < n_h; p++) O_out[p] = ws.dtheta_h[p]/S;
-    
-    
-    // Derivative of orbital matrices
-    if (ws.seed_orb.size() != (std::size_t)(K*N)) ws.seed_orb.resize(K*N);
-    ws.dtheta_orb.assign(n_orb, 0.0);
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < K; j++) {
-            for (int k = 0; k < N; k++) {
-                ws.seed_orb[j*N+k] = ws.drho[j] * ws.dets[j] * ws.dMinv[j*(N*N) + i*N + k];
-            }
-        }
-        a.orb_net.backprop_acc(ws.orb_caches[i], ws.seed_orb, ws.dtheta_orb, ws.delta_a, ws.delta_b);
-    }
-    
-    for (std::size_t p = 0; p < n_orb; p++) O_out[n_h + n_rho + p] = ws.dtheta_orb[p]/S;
-    
-    // Build envelope
-    double r2 = 0.0;
-    for (int i = 0; i < D; i++) {
-        double c = ws.x_sh[i];
-        r2 += c * c;
-    }
-    double r_env = std::sqrt(r2 + eps_env*eps_env);
-    
-    // Envelope derivative
-    O_out[n_h+n_rho+n_orb] = -std::exp(a.alpha) * r_env;
+    fill_O(a, ws, S, O_out);
 
     E_out = E_loc;
     return true;
 }
+

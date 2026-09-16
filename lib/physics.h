@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <cmath>
+#include <cstring>
 
 #include "network.h"
 #include "constants.h"
@@ -36,6 +37,18 @@ struct Ansatz {
         k -= nr;
         if (k < no) return orb_net.params[k];
         return alpha;
+    }
+
+    // Copy parameters
+    void copy_params_flat(double* dst) const {
+        std::size_t off = 0;
+        std::memcpy(dst + off, h_net.params.data(), h_net.params.size() * sizeof(double));
+        off += h_net.params.size();
+        std::memcpy(dst + off, rho_net.params.data(), rho_net.params.size() * sizeof(double));
+        off += rho_net.params.size();
+        std::memcpy(dst + off, orb_net.params.data(), orb_net.params.size() * sizeof(double));
+        off += orb_net.params.size();
+        dst[off] = alpha;
     }
 
     // Add to specific parameter
@@ -150,3 +163,5 @@ double V_coulomb(const std::vector<double>& x, const std::vector<double>& t);
 double l2_local(const double* x_shifted, const double* grad, double psi_val);
 
 bool local_E(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, std::vector<double>& O_out, double& E_out);
+
+void assemble_O(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, std::vector<double>& O_out);

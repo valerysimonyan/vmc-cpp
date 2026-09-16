@@ -8,3 +8,19 @@
 /lib/*
 !/lib/*.h
 !/lib/*.cpp
+
+# lib/gpu: the whole CUDA port. "/lib/*" above excludes subdirectories, so
+# this has to re-open the directory before re-including its sources.
+!/lib/gpu/
+/lib/gpu/*
+!/lib/gpu/*.h
+!/lib/gpu/*.cu
+
+# The build definition and the test suite -- without these the sources above
+# cannot be built or checked from a fresh clone.
+!/CMakeLists.txt
+!/tests/
+/tests/*
+!/tests/*.h
+!/tests/*.cpp
+!/tests/*.cu

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "util.h"
+#include "autodiff.h"
 
 #include <iostream>
 #include <cassert>
@@ -51,6 +52,28 @@ inline double act_grad(Activation act, double z) {
     __builtin_unreachable();
 }
 
+// For GPU use
+inline double act_hess(Activation act, double z) {
+    switch (act) {
+        case Activation::Tanh: {
+            double t = std::tanh(z);
+            return -2.0 * t * (1.0 - t * t);
+        }
+        case Activation::Gelu: {
+            const double s = 0.7978845608, k = 0.044715;
+            double u    = s * (z + k*z*z*z);
+            double up   = s * (1.0 + 3.0*k*z*z);
+            double upp  = s * 6.0 * k * z;
+            double t    = std::tanh(u);
+            double sech2 = 1.0 - t*t;
+            double tp   = sech2 * up;
+            double tpp  = -2.0*t*sech2*up*up + sech2*upp;
+            return tp + 0.5*z*tpp;
+        }
+    }
+    assert(false);
+    __builtin_unreachable();
+}
 
 struct ForwardCache {
     std::vector<double> a;
@@ -159,9 +182,8 @@ struct Network {
             // Evaluate neurons
             for (int i = 0; i < out_size; i++) {
                 T sum = T(param_values[layers[l].bias_offset+i]);
-                for (int j = 0; j < in_size; j++) {
-                    sum = sum + param_values[layers[l].weight_offset+in_size*i+j] * (*cur)[j];
-                }
+                const double* wrow = &param_values[layers[l].weight_offset + (std::size_t)in_size*i];
+                for (int j = 0; j < in_size; j++) fma_into(sum, wrow[j], (*cur)[j]);
                 // If not output layer add to array activation_function(sum), else add (sum)
                 (*nxt)[i] = is_out ? sum : apply_activation(activation, sum);
             }

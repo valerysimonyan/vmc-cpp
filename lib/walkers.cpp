@@ -5,13 +5,6 @@
 #include <limits>
 
 
-// Take walker seed, return scrambled result
-unsigned long long splitmix64(unsigned long long x) {
-    x += 0x9E3779B97F4A7C15ULL;                   // Add odd constant from golden ratio
-    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;  // Do an xor on a bit and a bit 30 to the right, multiply by random 64 bit constant
-    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;  // Do an xor on a bit and a bit 27 to the right, multiply by random 64 bit constant
-    return x ^ (x >> 31);                         // Do another xor on all bits and bit 31 to the right
-}
 
 void WalkerBatch::init(int B_) {
     B = B_;
@@ -37,7 +30,7 @@ double u01(WalkerBatch& wb, int w) {
     return dist(wb.rng[w]);
 }
 
-// Draw from normal distribution between -a and a
+// Draw from uniform distribution between -a and a
 double usym(WalkerBatch& wb, int w, double a) {
     std::uniform_real_distribution<double> dist(-a, a);
     return dist(wb.rng[w]);
@@ -134,6 +127,15 @@ static double wb_logp_from_S_ratio(double logp_cur, double S_cur, double S_new) 
     return logp_cur + std::log(std::fabs(S_new)) - std::log(std::fabs(S_cur));
 }
 
+// Per COORDINATE proposal, walker w consumes, in this order:
+//     1. uint_below(D)      the coordinate index
+//     2. usym(step)         the displacement
+//     3. u01()              the acceptance draw -- CONDITIONAL, see below
+//
+// Per DISCRETE (spin or isospin) proposal:
+//     1. uint_below(n_a)    index into the up/proton list
+//     2. uint_below(n_b)    index into the down/neutron list
+//     3. u01()              the acceptance draw -- CONDITIONAL, see below
 // Do one metropolis sweep
 void sweep_one(WalkerBatch& wb, int w, const Ansatz& a, double step, Workspace& ws) {
     double* xw = &wb.x[(std::size_t)w * D];
@@ -255,6 +257,40 @@ static double walker_r2(const double* xw) {
     return r2 / N;
 }
 
+void chunk_range_pub(int B, int n_workers, int th, int& w0, int& w1) {
+    chunk_range(B, n_workers, th, w0, w1);
+}
+
+double walker_r2_pub(const double* xw) {
+    return walker_r2(xw);
+}
+
+// Take measurement from one walker
+void record_one_walker(WalkerBatch& wb, const Ansatz& a, Workspace& ws, std::vector<double>& O, int w, int r, std::vector<double>& E_pool, std::vector<double>& O_pool, std::vector<uint8_t>& valid_pool, BatchStats& bs) {
+    const std::size_t P = a.n_params();
+    const int B = wb.B;
+
+    double* xw = &wb.x[(std::size_t)w*D];
+    double* sw = &wb.s[(std::size_t)w*N];
+    double* tw = &wb.t[(std::size_t)w*N];
+
+    std::size_t idx = (std::size_t)r*B + w;
+    double E_loc;
+    bool ok = local_E(xw, sw, tw, a, ws, O, E_loc);
+    valid_pool[idx] = ok ? 1 : 0;
+
+    if (ok) {
+        E_pool[idx] = E_loc;
+        for (std::size_t k = 0; k < P; k++) O_pool[idx*P + k] = O[k];
+
+        bs.Ew_sum[w]  += E_loc;
+        bs.E2w_sum[w] += E_loc * E_loc;
+        bs.l2w_sum[w] += ws.l2_val;
+        bs.r2w_sum[w] += walker_r2(xw);
+        bs.nw[w]++;
+    }
+}
+
 // Take samples across walkers, sum net result
 void record_batch(WalkerBatch& wb, const Ansatz& a, double step, int records, ThreadPool* pool, std::vector<Workspace>& wss, std::vector<double>& E_pool, std::vector<double>& O_pool, std::vector<uint8_t>& valid_pool, BatchStats& bs) {
     int B = wb.B;
@@ -262,11 +298,10 @@ void record_batch(WalkerBatch& wb, const Ansatz& a, double step, int records, Th
     std::size_t P = a.n_params();
 
     bs.Ew_sum.assign(B, 0.0);
+    bs.E2w_sum.assign(B, 0.0);
+    bs.l2w_sum.assign(B, 0.0);
+    bs.r2w_sum.assign(B, 0.0);
     bs.nw.assign(B, 0);
-
-    std::vector<double> E_sum_part(n_workers, 0.0), E2_sum_part(n_workers, 0.0);
-    std::vector<double> l2_sum_part(n_workers, 0.0), r2_sum_part(n_workers, 0.0);
-    std::vector<long long> n_valid_part(n_workers, 0), n_invalid_part(n_workers, 0);
 
     pool->run([&](int th) {
         int w0, w1;
@@ -281,32 +316,7 @@ void record_batch(WalkerBatch& wb, const Ansatz& a, double step, int records, Th
                     sweep_one(wb, w, a, step, ws);
                     recenter_walker(&wb.x[(std::size_t)w * D]);
                 }
-                
-                double* xw = &wb.x[(std::size_t)w*D];
-                double* sw = &wb.s[(std::size_t)w*N];
-                double* tw = &wb.t[(std::size_t)w*N];
-                
-                std::size_t idx = (std::size_t)r*B + w;
-                double E_loc; 
-                bool ok = local_E(xw, sw, tw, a, ws, O, E_loc);
-                valid_pool[idx] = ok ? 1 : 0;
-
-                // Only compute if sample valid
-                if (ok) {
-                    E_pool[idx] = E_loc;
-                    for (std::size_t k = 0; k < P; k++) O_pool[idx*P + k] = O[k];
-
-                    E_sum_part[th] += E_loc;
-                    E2_sum_part[th] += E_loc * E_loc;
-                    l2_sum_part[th] += ws.l2_val;
-                    r2_sum_part[th] += walker_r2(xw);
-                    n_valid_part[th]++;
-
-                    bs.Ew_sum[w] += E_loc;
-                    bs.nw[w]++;
-                } else {
-                    n_invalid_part[th]++;
-                }
+                record_one_walker(wb, a, ws, O, w, r, E_pool, O_pool, valid_pool, bs);
             }   
         }
     });
@@ -314,14 +324,14 @@ void record_batch(WalkerBatch& wb, const Ansatz& a, double step, int records, Th
     // Sum over walkers
     bs.E_sum = bs.E2_sum = bs.l2_sum = bs.r2_sum = 0.0;
     bs.n_valid = bs.n_invalid = 0;
-    for (int th = 0; th < n_workers; th++) {
-        bs.E_sum += E_sum_part[th];
-        bs.E2_sum += E2_sum_part[th];
-        bs.l2_sum += l2_sum_part[th];
-        bs.r2_sum += r2_sum_part[th];
-        bs.n_valid += n_valid_part[th];
-        bs.n_invalid += n_invalid_part[th];
+    for (int w = 0; w < B; w++) {
+        bs.E_sum += bs.Ew_sum[w];
+        bs.E2_sum += bs.E2w_sum[w];
+        bs.l2_sum += bs.l2w_sum[w];
+        bs.r2_sum += bs.r2w_sum[w];
+        bs.n_valid += bs.nw[w];
     }    
+    bs.n_invalid = (long long)records * (long long)B - bs.n_valid;
 }
 
 // Evaluate average in mean across batches
