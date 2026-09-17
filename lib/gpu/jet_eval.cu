@@ -9,10 +9,10 @@
 
 
 // Evlaute double log p
-void eval_jet_prepare(DeviceState& ds, cublasHandle_t handle, int B, cudaStream_t stream) {
+void eval_jet_prepare(DeviceState& ds, cublasHandle_t handle, int B, cudaStream_t stream, bool stash) {
     if (B <= 0) return;
 
-    eval_logp_batch_prop(ds, handle, B, ds.x.d, ds.S.d, ds.logp_prop.d, stream);
+    eval_logp_batch_prop(ds, handle, B, ds.x.d, ds.S.d, ds.logp_prop.d, stream, stash);
     batched_inverse(handle, B*K, ds.M_batch.d, ds.lu_ptrs.d, ds.inv_ptrs.d, ds.lu_piv.d, ds.inv_info.d, ds.Minv_batch.d, stream);
 }
 

@@ -90,6 +90,14 @@ struct DeviceState {
     DeviceArray<real> E_loc;             // B
     DeviceArray<uint8_t> valid_loc;      // B, valid_jet && isfinite(E_loc)
 
+    NetCache cache_h, cache_rho, cache_orb;
+    DeviceArray<real> bp_a, bp_b;     // backprop delta ping-pong, B*N x widest layer
+    DeviceArray<real> dpsi_dxi;       // B x m_feat, rho's input gradient = the h seed
+    DeviceArray<real> bp_wt;          // largest in_w*out_w, one layer's transposed weights
+
+    void grow_phase5(const Ansatz& a, bool verbose = true);
+    std::size_t phase5_bytes() const;
+
     void grow_phase43(bool verbose = true);
     std::size_t phase43_bytes() const;
 

@@ -39,15 +39,15 @@ __global__ void xi_reduce_combo_kernel(const real* __restrict__ tab_h, const rea
     xi[idx] = acc;    
 }
 
-// Evaluate from chaing
-static void eval_chain(DeviceState& ds, cublasHandle_t handle, int B, const real* x_src, real* S_dst, real* logp_dst, cudaStream_t stream) {
+// Evaluate Psi through the chain
+static void eval_chain(DeviceState& ds, cublasHandle_t handle, int B, const real* x_src, real* S_dst, real* logp_dst, cudaStream_t stream, bool stash = false) {
     shift_to_com(x_src, ds.x_sh.d, B, stream);
     build_feat(ds.x_sh.d, ds.s.d, ds.t.d, ds.feat_in.d, B, stream);
 
-    net_forward(handle, ds.h_net_d, ds.params.d, ds.feat_in.d, B*N, ds.act_a.d, ds.act_b.d, ds.h_out.d, stream);
+    net_forward(handle, ds.h_net_d, ds.params.d, ds.feat_in.d, B*N, ds.act_a.d, ds.act_b.d, ds.h_out.d, stream, stash ? &ds.cache_h : nullptr);
     xi_reduce(ds.h_out.d, ds.xi.d, B, stream);
-    net_forward(handle, ds.rho_net_d, ds.params.d, ds.xi.d, B, ds.act_a.d, ds.act_b.d, ds.rho_out.d, stream);
-    net_forward(handle, ds.orb_net_d, ds.params.d, ds.feat_in.d, B*N, ds.act_a.d, ds.act_b.d, ds.orb_out.d, stream);
+    net_forward(handle, ds.rho_net_d, ds.params.d, ds.xi.d, B, ds.act_a.d, ds.act_b.d, ds.rho_out.d, stream, stash ? &ds.cache_rho : nullptr);
+    net_forward(handle, ds.orb_net_d, ds.params.d, ds.feat_in.d, B*N, ds.act_a.d, ds.act_b.d, ds.orb_out.d, stream, stash ? &ds.cache_orb : nullptr);
 
     assemble_M(ds.orb_out.d, ds.M_batch.d, B, stream);
     batched_det(handle, B*K, ds.M_batch.d, ds.lu_ptrs.d, ds.lu_piv.d, ds.lu_info.d, ds.dets.d, stream);
@@ -55,14 +55,14 @@ static void eval_chain(DeviceState& ds, cublasHandle_t handle, int B, const real
     envelope_logp(ds.x_sh.d, S_dst, ds.params.d, ds.P, logp_dst, B, stream);
 }
 
-// Must keep old and new logp seperate for Metropolis seperate of GPU 
+void eval_logp_batch_prop(DeviceState& ds, cublasHandle_t handle, int B, const real* x_prop, real* S_prop, real* logp_prop, cudaStream_t stream, bool stash) {
+    eval_chain(ds, handle, B, x_prop, S_prop, logp_prop, stream, stash);
+}
+
 void eval_logp_batch(DeviceState& ds, cublasHandle_t handle, int B, cudaStream_t stream) {
     eval_chain(ds, handle, B, ds.x.d, ds.S.d, ds.logp.d, stream);
 }
 
-void eval_logp_batch_prop(DeviceState& ds, cublasHandle_t handle, int B, const real* x_prop, real* S_prop, real* logp_prop, cudaStream_t stream) {
-    eval_chain(ds, handle, B, x_prop, S_prop, logp_prop, stream);
-}
 
 // Build st table
 void build_st_table_batch(DeviceState& ds, cublasHandle_t handle, int B, cudaStream_t stream) {

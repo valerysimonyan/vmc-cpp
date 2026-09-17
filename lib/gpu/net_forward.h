@@ -23,4 +23,11 @@ struct DeviceNet {
     void build(const Network& net, std::size_t base);
 };
 
-void net_forward(cublasHandle_t handle, const DeviceNet& dn, const real* params, const real* in, int rows, real* a, real* b, real* out, cudaStream_t stream = 0);
+struct NetCache {
+    std::vector<DeviceArray<real>> a_in, z;
+    std::size_t rows_cap = 0;
+    void alloc(const DeviceNet& dn, std::size_t rows);
+    std::size_t bytes() const;
+};
+
+void net_forward(cublasHandle_t handle, const DeviceNet& dn, const real* params, const real* in, int rows, real* a, real* b, real* out, cudaStream_t stream = 0, NetCache* cache = nullptr);

@@ -7,15 +7,14 @@
 #include <algorithm>
 
 // Compose energy computation
-int eval_local_E_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a, Workspace& ws, int B, cudaStream_t stream) {
+int eval_local_E_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a, Workspace& ws, int B, cudaStream_t stream, bool stash_for_O) {
     if (B <= 0) return 0;
 
-    eval_jet_prepare(ds, handle, B, stream);
+    eval_jet_prepare(ds, handle, B, stream, stash_for_O);
 
     CUDA_CHECK(cudaMemcpy(ds.dets_psi.d, ds.dets.d, (std::size_t)K * B * sizeof(real), cudaMemcpyDeviceToDevice));
     CUDA_CHECK(cudaMemcpy(ds.xi_psi.d,   ds.xi.d,   (std::size_t)B * m_feat * sizeof(real), cudaMemcpyDeviceToDevice));
 
-    // --- 4.2: jets, E_kin, l2, V_3N, validity (chunked) -----------------------
     for (int w_off = 0; w_off < B; w_off += jet_walkers) {
         const int Bc = std::min((int)jet_walkers, B - w_off);
         eval_jet_chunk(ds, handle, Bc, w_off, B, stream);
@@ -35,16 +34,12 @@ int eval_local_E_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a,
         for (int w_off = 0; w_off < B; w_off += ex_walkers) {
             const int Bc = std::min((int)ex_walkers, B - w_off);
             ex_xi_swap(ds.xi_psi.d, ds.h_out.d, ds.s.d, ds.t.d, ds.pair_ij.d, ds.xi_swap.d, Bc, w_off, stream);
-            // ONE value-only rho forward over every slot in the chunk. Inactive
-            // slots ride along: a dense GEMM cannot skip rows, they are <= 3x
-            // the pair count of a small net, and nothing reads their output.
             net_forward(handle, ds.rho_net_d, ds.params.d, ds.xi_swap.d, Bc * per_w, ds.act_a.d, ds.act_b.d, ds.rho_swap.d, stream);
             ex_S_swap(ds.rho_swap.d, ds.dets_psi.d, ds.Minv_batch.d, ds.orb_out.d, ds.s.d, ds.t.d, ds.pair_ij.d, ds.ex_active.d, ds.rank2_ok.d, ds.S_swap.d, Bc, w_off, stream);
         }
         n_fallback = ex_fallback_host(ds, a, ws, B);
     }
 
-    // --- energy sum and validity completion -----------------------------------
     coulomb_batch(ds.x.d, ds.t.d, ds.V_coul.d, B, stream);
     ex_assemble(ds.x.d, ds.s.d, ds.t.d, ds.pair_ij.d, ds.S_swap.d, ds.S0.d, ds.E_kin.d, ds.v3n_out.d, ds.V_coul.d, ds.valid_jet.d, ds.V_nuc.d, ds.E_loc.d, ds.valid_loc.d, B, stream);
     return n_fallback;

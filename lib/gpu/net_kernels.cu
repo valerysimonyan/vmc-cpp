@@ -74,6 +74,26 @@ void bias_act(real* z, const real* bias, int rows, int width, Activation act, bo
     cuda_sync_check("bias_act");
 }
 
+// Apply Bias
+__global__ void bias_act_stash_kernel(real* __restrict__ z, real* __restrict__ z_keep, const real* __restrict__ bias, int rows, int width, Activation act, bool is_output) {
+    std::size_t idx = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    std::size_t total = (std::size_t)rows * width;
+    if (idx >= total) return;
+    int col = (int)(idx % (std::size_t)width);
+    real v = z[idx] + bias[col];
+    z_keep[idx] = v;
+    z[idx] = is_output ? v : dev_apply_activation(act, v);
+}
+
+void bias_act_stash(real* z, real* z_keep, const real* bias, int rows, int width, Activation act, bool is_output, cudaStream_t stream) {
+    if (rows <= 0 || width <= 0) return;
+    const std::size_t total = (std::size_t)rows * width;
+    const int threads = 256;
+    const std::size_t blocks = (total + threads - 1) / threads;
+    bias_act_stash_kernel<<<(unsigned)blocks, threads, 0, stream>>>(z, z_keep, bias, rows, width, act, is_output);
+    cuda_sync_check("bias_act_stash");
+}
+
 // Evaluate xi =  sum_p h_out
 __global__ void xi_reduce_kernel(const real* __restrict__ h_out, real* __restrict__ xi, int B) {
     std::size_t idx = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;

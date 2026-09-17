@@ -102,6 +102,75 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose) {
     }
 }
 
+std::size_t DeviceState::phase5_bytes() const {
+    return cache_h.bytes() + cache_rho.bytes() + cache_orb.bytes()
+         + bp_a.bytes() + bp_b.bytes() + dpsi_dxi.bytes() + bp_wt.bytes();
+}
+
+static void check_backprop_layout(const Ansatz& a, const DeviceNet& dn, const Network& net, std::size_t base, const char* name) {
+    if (dn.layers.size() != net.layers.size())
+        throw std::runtime_error(std::string("grow_phase5: layer count mismatch in ") + name);
+    for (std::size_t l = 0; l < net.layers.size(); l++) {
+        const auto& L = dn.layers[l];
+        const auto& H = net.layers[l];
+        const bool ok = L.in_w == H.input_size && L.out_w == H.output_size
+                     && L.w_off == base + (std::size_t)H.weight_offset
+                     && L.b_off == base + (std::size_t)H.bias_offset
+                     && L.b_off == L.w_off + (std::size_t)L.in_w * L.out_w;
+        if (!ok) {
+            std::ostringstream oss;
+            oss << "grow_phase5: " << name << " layer " << l << " offsets are not the canonical "
+                << "[weights then biases] layout the backprop kernels write into";
+            throw std::runtime_error(oss.str());
+        }
+    }
+    (void)a;
+}
+
+void DeviceState::grow_phase5(const Ansatz& a, bool verbose) {
+    const std::size_t n_h = a.h_net.params.size(), n_rho = a.rho_net.params.size(), n_orb = a.orb_net.params.size();
+    check_backprop_layout(a, h_net_d,   a.h_net,   0,            "h_net");
+    check_backprop_layout(a, rho_net_d, a.rho_net, n_h,          "rho_net");
+    check_backprop_layout(a, orb_net_d, a.orb_net, n_h + n_rho,  "orb_net");
+    if (n_h + n_rho + n_orb + 1 != P)
+        throw std::runtime_error("grow_phase5: P is not h + rho + orb + alpha; the O_alpha slot would be wrong");
+
+    const std::size_t rows = B * (std::size_t)N;
+    cache_h.alloc(h_net_d, rows);
+    cache_rho.alloc(rho_net_d, B);
+    cache_orb.alloc(orb_net_d, rows);
+
+    int widest = 0;
+    std::size_t biggest_W = 0;
+    for (const DeviceNet* dn : {&h_net_d, &rho_net_d, &orb_net_d})
+        for (const auto& L : dn->layers) {
+            widest = std::max(widest, std::max(L.in_w, L.out_w));
+            biggest_W = std::max(biggest_W, (std::size_t)L.in_w * L.out_w);
+        }
+    bp_wt.alloc(biggest_W);
+    bp_a.alloc(rows * (std::size_t)widest);
+    bp_b.alloc(rows * (std::size_t)widest);
+    dpsi_dxi.alloc(B * (std::size_t)m_feat);
+
+    const double grand_gb = (double)(total_bytes() + phase3_bytes() + phase33_bytes() + phase4_bytes()
+                                     + phase42_bytes() + phase43_bytes() + phase5_bytes()) / (1024.0*1024.0*1024.0);
+    if (grand_gb > o_pool_max_gb) {
+        std::ostringstream oss;
+        oss << "DeviceState::grow_phase5: total would be " << grand_gb << " GiB, over the "
+            << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).";
+        throw std::runtime_error(oss.str());
+    }
+    if (verbose) {
+        auto mib = [](std::size_t b){ return (double)b/(1024.0*1024.0); };
+        std::printf("DeviceState::grow_phase5: widest layer %d\n", widest);
+        std::printf("  activation stash h/rho/orb      %8.3f / %.3f / %.3f MiB\n",
+                    mib(cache_h.bytes()), mib(cache_rho.bytes()), mib(cache_orb.bytes()));
+        std::printf("  backprop ping-pong + dpsi_dxi   %8.3f MiB\n", mib(bp_a.bytes()+bp_b.bytes()+dpsi_dxi.bytes()));
+        std::printf("  PHASE 5 ADDED                   %8.3f MiB\n", mib(phase5_bytes()));
+        std::printf("  GRAND TOTAL                     %8.3f GiB  (cap %.1f GiB)\n", grand_gb, o_pool_max_gb);
+    }
+}
+
 std::size_t DeviceState::phase43_bytes() const {
     return dets_psi.bytes() + xi_psi.bytes() + S0.bytes() + rank2_ok.bytes() + pair_ij.bytes()
          + ex_active.bytes() + xi_swap.bytes() + rho_swap.bytes() + S_swap.bytes()
