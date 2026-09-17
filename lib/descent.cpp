@@ -22,7 +22,11 @@
 #include "gpu/eval.h"
 #include "gpu/gpu_sampler.h"
 #include "gpu/sampler_kernels.h"
+#include "gpu/record_device.h"
+#include "gpu/sr_device.h"
 #include <cublas_v2.h>
+
+inline constexpr bool debug_walker_download_at_checkpoint = false;
 #endif
 
 // ADAM Descent
@@ -131,9 +135,7 @@ static double therm_init_tuned_device(DeviceState& ds, cublasHandle_t handle, in
     return acc;
 }
 
-static void device_spin_tau_acceptance(DeviceState& ds, int B, int total_sweeps, double& spin_acc, double& tau_acc) {
-    long long c = 0, sp = 0, tau = 0;
-    download_acceptance(ds, B, c, sp, tau);
+static void spin_tau_from_counts(long long sp, long long tau, int B, int total_sweeps, double& spin_acc, double& tau_acc) {
     spin_acc = (spin_mode == SpinMode::Sampled && N_u > 0 && N_d > 0) ? (double)sp  / ((double)B * total_sweeps * spin_draws) : 0.0;
     tau_acc = (tau_mode  == TauMode::Sampled  && N_p > 0 && N_n > 0) ? (double)tau / ((double)B * total_sweeps * tau_draws)  : 0.0;
 }
@@ -240,6 +242,9 @@ DescentResult descent(Ansatz& a) {
     ds.grow_phase4();
     ds.grow_phase42();
     ds.grow_phase43();
+    ds.grow_phase5(a);
+    ds.grow_phase52();
+    ds.grow_phase53();
     PinnedArray staging;
     cublasHandle_t cublas;
     if (cublasCreate(&cublas) != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("descent: cublasCreate failed");
@@ -274,16 +279,23 @@ DescentResult descent(Ansatz& a) {
     
     // Vectors for statistics, declare once for memory use, allocate maximum amount now 
     std::size_t n_samples_max = (std::size_t)n_walkers * (std::size_t)records_per_iter_max;
+#ifdef VMC_CUDA
+    // No host O_pool: it lives on the device and never crosses the bus. E_pool,
+    // valid_pool and the per-walker stats arrive in `it` once per iteration.
+    (void)n_samples_max;
+    IterStatsHost it;
+#else
     std::vector<double> E_pool(n_samples_max);
     std::vector<double> O_pool(n_samples_max * n_params);
     std::vector<uint8_t> valid_pool(n_samples_max);
+#endif
     std::vector<double> grad(n_params);
     std::vector<double> O_exp(n_params);    
     BatchStats bs;
 
 
     std::ofstream csv("training.csv");
-    csv << "step,E_exp,E_err,var,acceptance,spin_acceptance,tau_acceptance,r_rms,lambda,cg_iters,cg_residual,delta_norm,sq_metric_norm,norm_capped,node_hits,n_valid,n_invalid,alpha,grad_alpha,delta_alpha,metro_ms,local_E_ms,o_ms,sr_ms,gpu_ms,ms_iter,L2,rms_damp_mean\n";
+    csv << "step,E_exp,E_err,var,acceptance,spin_acceptance,tau_acceptance,r_rms,lambda,cg_iters,cg_residual,delta_norm,sq_metric_norm,norm_capped,node_hits,n_valid,n_invalid,alpha,grad_alpha,delta_alpha,metro_ms,local_E_ms,o_ms,sr_ms,gpu_ms,ms_iter,L2,rms_damp_mean,xfer_ms,bytes_up,bytes_dn,n_scalar_dl\n";
         
     for (int i = 0; i < N_descent; i++) {
         auto t0 = std::chrono::steady_clock::now();
@@ -297,26 +309,31 @@ DescentResult descent(Ansatz& a) {
         double gpu_ms = 0.0;
         double local_E_dev_ms = -1.0;  // CUDA: device energy time; CPU build keeps the old record-window figure
         double o_ms = 0.0; 
+        double xfer_ms = 0.0;          // CUDA: the batched per-iteration download
 
 #ifdef VMC_CUDA
-        ds.upload_params(a, staging);
-
+        xfer_stats().reset();
+        ds.upload_params(a, staging);                                   // UP: params (P)
         eval_logp_batch(ds, cublas, n_walkers);
 
-        // Thermalize batch after each parameter update, then record samples
+        // Thermalize after the parameter update, then the record rounds: sweeps,
+        // device local_E, O assembly -- nothing crosses the bus until the end.
         auto tA = std::chrono::steady_clock::now();
         r.acceptance = therm_batch_device(ds, cublas, n_walkers, step, therm_re_sweep);
         auto tB = std::chrono::steady_clock::now();
-        double record_sweep_ms = 0.0;
-        HybridTimes htimes;
-        record_batch_hybrid(ds, cublas, wb, a, step, records_now, &pool, wss, staging, E_pool, O_pool, valid_pool, bs, &htimes);
+        RecordTimes rtimes;
+        record_batch_device(ds, cublas, a, wss[0], n_walkers, step, records_now, /*with_O=*/true, &rtimes);
         auto tC = std::chrono::steady_clock::now();
 
-        gpu_ms = std::chrono::duration<double, std::milli>(tB - tA).count() + htimes.sweep_ms + htimes.localE_ms;
-        local_E_dev_ms = htimes.localE_ms;
-        o_ms = htimes.o_ms;
+        // DOWN: E_pool, valid_pool, per-walker stats, acceptance counters -- one copy.
+        download_iteration(ds, n_walkers, records_now, staging, it);
+        bs = it.bs;
+        xfer_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tC).count();
 
-        device_spin_tau_acceptance(ds, n_walkers, total_sweeps, r.spin_acceptance, r.tau_acceptance);
+        gpu_ms = std::chrono::duration<double, std::milli>(tB - tA).count() + rtimes.sweep_ms + rtimes.localE_ms + rtimes.o_ms;
+        local_E_dev_ms = rtimes.localE_ms;
+        o_ms = rtimes.o_ms;
+        spin_tau_from_counts(it.sp_acc, it.tau_acc, n_walkers, total_sweeps, r.spin_acceptance, r.tau_acceptance);
 #else
         // Evaluate log|Ψ|
         refresh_logp(wb, a, &pool, wss);
@@ -335,7 +352,23 @@ DescentResult descent(Ansatz& a) {
         else if (r.acceptance > 0.55) step *= 1.1;
     
         // Compute observables from samples
+#ifdef VMC_CUDA
+        // compute_obs's scalar head, unchanged ...
+        r.El_exp = bs.E_sum / (double)bs.n_valid;
+        r.var = std::max(0.0, bs.E2_sum / (double)bs.n_valid - r.El_exp * r.El_exp);
+        r.total_node_hits = (double)bs.n_invalid;
+        r.L2 = bs.l2_sum / (double)bs.n_valid;
+        r.r_rms = std::sqrt(bs.r2_sum / (double)bs.n_valid);
+        // ... and its O_exp / clipped gradient on device. The clip bounds are the
+        // host's median/MAD over the downloaded E_pool; they go UP as kernel args.
+        build_mask(ds.valid_pool.d, ds.mask_d.d, n_samples);
+        O_exp_device(cublas, ds.O_pool.d, ds.mask_d.d, n_samples, n_params, bs.n_valid, ds.O_exp_d.d);
+        const ClipStats clip = clip_stats_host(it.E_pool, it.valid_pool, n_samples, bs.n_valid);
+        grad_device(cublas, ds.O_pool.d, ds.E_pool.d, ds.valid_pool.d, ds.O_exp_d.d, n_samples, n_params, bs.n_valid,
+                    clip, ds.E_clip_d.d, ds.grad_d.d);
+#else
         compute_obs(bs, r, n_params, E_pool, O_pool, valid_pool, n_samples, &pool, O_exp, grad);
+#endif
         r.El_err = batch_error(bs);
 
         // Checkpoint the lowest energy state based on upper bound of energy
@@ -343,6 +376,9 @@ DescentResult descent(Ansatz& a) {
         if (i >= N_gd && E_ucb < best_E_ucb && r.El_exp < diss_threshold) {
             best_E_ucb = E_ucb;
             save_checkpoint(best_ckpt_path, a);
+#ifdef VMC_CUDA
+            if constexpr (debug_walker_download_at_checkpoint) ds.download_walkers(wb, staging);
+#endif
         }
         if ((i + 1) % ckpt_every == 0) save_checkpoint("periodic_checkpoint.txt", a);
         if (i >= diss_watch_window) {
@@ -360,9 +396,24 @@ DescentResult descent(Ansatz& a) {
         SRStepLog log{};
         double sr_ms = 0.0;
         double rms_damp_mean = 0.0;
+        long long n_scalar_dl = 0;
         if (i < N_gd) {
+#ifdef VMC_CUDA
+            // ADAM warmup stays on the host: one P-vector down per iteration, a
+            // price paid only for the N_gd warmup steps rather than porting ADAM.
+            ds.grad_d.down(grad.data(), n_params);
+#endif
             ADAM(grad, m, v, i, a);
         } else {
+#ifdef VMC_CUDA
+            auto t_sr0 = std::chrono::steady_clock::now();
+            rms_damp_mean = rms_update_device(cublas, ds.grad_d.d, ds.v_rms_d.d, ds.d_rms_d.d, n_params);
+            // SR init + CG + trust caps on device; delta (P) comes DOWN inside, and
+            // the logged norms are the device-computed ones.
+            log = SR_step_device(ds, cublas, a, i - N_gd, n_samples, bs.n_valid, delta, &n_scalar_dl);
+            auto t_sr1 = std::chrono::steady_clock::now();
+            sr_ms = std::chrono::duration<double, std::milli>(t_sr1 - t_sr0).count();
+#else
             for (std::size_t k = 0; k < n_params; k++) {
                 v_rms[k] = sr_rms_beta * v_rms[k] + (1.0 - sr_rms_beta) * grad[k] * grad[k];
                 d_rms[k] = std::sqrt(v_rms[k]) + 1e-8;
@@ -374,6 +425,7 @@ DescentResult descent(Ansatz& a) {
             log = SR_step(grad, O_pool, O_exp, a, sr_op, delta, i-N_gd, n_params, &pool, d_rms.data(), n_samples, valid_pool.data(), bs.n_valid, M_inv_diag, S_delta);
             auto t_sr1 = std::chrono::steady_clock::now();
             sr_ms = std::chrono::duration<double, std::milli>(t_sr1 - t_sr0).count();
+#endif
         }
 
         // Evaluate times
@@ -383,13 +435,23 @@ DescentResult descent(Ansatz& a) {
         double local_E_ms = (local_E_dev_ms >= 0.0) ? local_E_dev_ms : std::chrono::duration<double, std::milli>(tC - tB).count();
 
         std::size_t alpha_idx = n_params - 1;
+        double grad_alpha = grad[alpha_idx];
+        long long bytes_up = 0, bytes_dn = 0;
+#ifdef VMC_CUDA
+        if (i >= N_gd) {   // SR phase: grad stays on device; one scalar down for the log
+            CUDA_CHECK(cudaMemcpy(&grad_alpha, ds.grad_d.d + alpha_idx, sizeof(double), cudaMemcpyDeviceToHost));
+            xfer_note_dn(sizeof(double));
+        }
+        bytes_up = xfer_stats().bytes_up;
+        bytes_dn = xfer_stats().bytes_dn;
+#endif
         csv << i << "," << r.El_exp << "," << r.El_err << "," << r.var << ","
             << r.acceptance << "," << r.spin_acceptance << "," << r.tau_acceptance << "," << r.r_rms << ","
             << log.lambda << "," << log.cg_iters << "," << log.cg_residual << ","
             << log.delta_norm << "," << log.sq_metric_norm << "," << log.norm_capped << "," << r.total_node_hits << ","
             << bs.n_valid << "," << bs.n_invalid << ","
-            << a.get_param(alpha_idx) << "," << grad[alpha_idx] << "," << delta[alpha_idx] << ","
-            << metro_ms << "," << local_E_ms << "," << o_ms << "," << sr_ms << "," <<  gpu_ms << "," << ms << "," << r.L2 << "," << rms_damp_mean << "\n";
+            << a.get_param(alpha_idx) << "," << grad_alpha << "," << delta[alpha_idx] << ","
+            << metro_ms << "," << local_E_ms << "," << o_ms << "," << sr_ms << "," <<  gpu_ms << "," << ms << "," << r.L2 << "," << rms_damp_mean << "," << xfer_ms << "," << bytes_up << "," << bytes_dn << "," << n_scalar_dl << "\n";
         csv.flush();
 
         if (i < N_gd) std::cout << "ADAM|"; else std::cout << "SR|";
@@ -399,7 +461,7 @@ DescentResult descent(Ansatz& a) {
             << ", tau_acceptance: " << r.tau_acceptance
             << ", r_rms: " << r.r_rms
             << ", node_hits: " << r.total_node_hits << ", ms/iter: " << ms
-            << ", alpha: " << a.get_param(alpha_idx) << ", grad_alpha: " << grad[alpha_idx]
+            << ", alpha: " << a.get_param(alpha_idx) << ", grad_alpha: " << grad_alpha
             << ", L2: " << r.L2 << std::endl;
         if (i >= N_gd) std::cout << "               lam: " << log.lambda << ", cg: " << log.cg_iters
                   << ", delta_alpha: " << delta[alpha_idx]
@@ -411,15 +473,19 @@ DescentResult descent(Ansatz& a) {
     }
     save_checkpoint("final_checkpoint.txt", a);
 #ifdef VMC_CUDA
+    ds.download_walkers(wb, staging);     // run end: the one sanctioned x/s/t download
     cublasDestroy(cublas);
 #endif
     return r;
 }
 
+
+
 DescentResult evaluate_frozen(Ansatz& a) {
     DescentResult r{};
+#ifndef VMC_CUDA
     std::size_t n_params = a.n_params();
-
+#endif
     WalkerBatch wb;
     wb.init(n_walkers);
     ThreadPool pool(n_thread);
@@ -427,31 +493,6 @@ DescentResult evaluate_frozen(Ansatz& a) {
     init_batch(wb, a, &pool, wss);
 
     double step = step0;
-    double therm_acc = therm_init_tuned(wb, a, step, &pool, wss);
-    std::cout << "Frozen-eval thermalization: acceptance " << therm_acc
-              << ", tuned step " << step << " (from step0=" << step0 << ")\n";
-
-    // Parameters are frozen for the whole evaluation -- refresh once, not per
-    // iteration, since nothing moves.
-    refresh_logp(wb, a, &pool, wss);
-
-    // O_pool is unused here (no gradient is taken with frozen parameters) but
-    // record_batch writes into it, so it still has to be allocated.
-    std::size_t n_samples_max = (std::size_t)n_walkers * (std::size_t)records_per_iter_max;
-    std::vector<double> E_pool(n_samples_max);
-    std::vector<double> O_pool(n_samples_max * n_params);
-    std::vector<uint8_t> valid_pool(n_samples_max);
-
-    // Pool the per-walker sums across every eval iteration -- each walker's
-    // mean over ALL its samples (across iterations) remains the independent
-    // unit for batch_error.
-    BatchStats bs_all;
-    bs_all.Ew_sum.assign(n_walkers, 0.0);
-    bs_all.nw.assign(n_walkers, 0);
-    bs_all.E_sum = bs_all.E2_sum = bs_all.l2_sum = bs_all.r2_sum = 0.0;
-    bs_all.n_valid = bs_all.n_invalid = 0;
-
-    double acc_sum = 0.0, spin_acc_sum = 0.0, tau_acc_sum = 0.0;
 #ifdef VMC_CUDA
     gpu_select_device(true);
     DeviceState ds(a);
@@ -460,6 +501,7 @@ DescentResult evaluate_frozen(Ansatz& a) {
     ds.grow_phase4();
     ds.grow_phase42();
     ds.grow_phase43();
+    ds.grow_phase53();
     PinnedArray staging;
     cublasHandle_t cublas;
     if (cublasCreate(&cublas) != CUBLAS_STATUS_SUCCESS)
@@ -467,21 +509,42 @@ DescentResult evaluate_frozen(Ansatz& a) {
     ds.upload_params(a, staging);
     upload_and_reset(ds, wb, staging);
     eval_logp_batch(ds, cublas, n_walkers);
+    double therm_acc = therm_init_tuned_device(ds, cublas, n_walkers, step);
+    IterStatsHost it;
+#else
+    double therm_acc = therm_init_tuned(wb, a, step, &pool, wss);
 #endif
+    std::cout << "Frozen-eval thermalization: acceptance " << therm_acc
+              << ", tuned step " << step << " (from step0=" << step0 << ")\n";
+
+    std::size_t n_samples_max = (std::size_t)n_walkers * (std::size_t)records_per_iter_max;
+#ifndef VMC_CUDA
+    refresh_logp(wb, a, &pool, wss);
+
+    std::vector<double> E_pool(n_samples_max);
+    std::vector<double> O_pool(n_samples_max * n_params);
+    std::vector<uint8_t> valid_pool(n_samples_max);
+#endif
+
+    BatchStats bs_all;
+    bs_all.Ew_sum.assign(n_walkers, 0.0);
+    bs_all.nw.assign(n_walkers, 0);
+    bs_all.E_sum = bs_all.E2_sum = bs_all.l2_sum = bs_all.r2_sum = 0.0;
+    bs_all.n_valid = bs_all.n_invalid = 0;
+
+    double acc_sum = 0.0, spin_acc_sum = 0.0, tau_acc_sum = 0.0;
 
     for (int i = 0; i < eval_iters; i++) {
         BatchStats bs;
         int total_sweeps = therm_re_sweep + records_per_iter_max * sweeps_between_records;
         double spin_acc, tau_acc;
 #ifdef VMC_CUDA
-
-        // Parameters are frozen here, so unlike descent() there is no per-iteration
-        // upload and no re-evaluation of logp: the device state carries forward.
         double acc = therm_batch_device(ds, cublas, n_walkers, step, therm_re_sweep);
         tune_step(acc, step);
-        record_batch_hybrid(ds, cublas, wb, a, step, records_per_iter_max, &pool, wss,
-                            staging, E_pool, O_pool, valid_pool, bs);
-        device_spin_tau_acceptance(ds, n_walkers, total_sweeps, spin_acc, tau_acc);
+        record_batch_device(ds, cublas, a, wss[0], n_walkers, step, records_per_iter_max, /*with_O=*/false);
+        download_iteration(ds, n_walkers, records_per_iter_max, staging, it);
+        bs = it.bs;
+        spin_tau_from_counts(it.sp_acc, it.tau_acc, n_walkers, total_sweeps, spin_acc, tau_acc);
 #else
         double acc = therm_batch(wb, a, step, therm_re_sweep, &pool, wss);
         tune_step(acc, step);
@@ -524,6 +587,7 @@ DescentResult evaluate_frozen(Ansatz& a) {
               << ", tau_acceptance: " << r.tau_acceptance
               << ", node_hits: " << r.total_node_hits << "\n";
 #ifdef VMC_CUDA
+    ds.download_walkers(wb, staging);     // run end
     cublasDestroy(cublas);
 #endif
     return r;

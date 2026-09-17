@@ -94,6 +94,20 @@ struct DeviceState {
     DeviceArray<real> bp_a, bp_b;     // backprop delta ping-pong, B*N x widest layer
     DeviceArray<real> dpsi_dxi;       // B x m_feat, rho's input gradient = the h seed
     DeviceArray<real> bp_wt;          // largest in_w*out_w, one layer's transposed weights
+    
+    DeviceArray<double> mask_d, E_clip_d, t_ns_d;                   // Ns_max
+    DeviceArray<double> O_exp_d, S_diag_d, grad_d, v_rms_d, d_rms_d, M_inv_d;
+    DeviceArray<double> cg_r, cg_z, cg_p, cg_Ap, delta_d, S_delta_d;  // P
+
+    DeviceArray<double> Ew_d, E2w_d, l2w_d, r2w_d;   // B
+    DeviceArray<int> nw_d;                           // B
+    DeviceArray<unsigned char> pack_d;               // Ns_max*9 + B*60 bytes
+
+    void grow_phase53(bool verbose = true);
+    std::size_t phase53_bytes() const;
+
+    void grow_phase52(bool verbose = true);
+    std::size_t phase52_bytes() const;
 
     void grow_phase5(const Ansatz& a, bool verbose = true);
     std::size_t phase5_bytes() const;

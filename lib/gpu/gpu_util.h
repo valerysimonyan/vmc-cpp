@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include<atomic>
 
 #define CUDA_CHECK(call)                                                        \
     do {                                                                        \
@@ -79,6 +80,14 @@ inline int gpu_select_device(bool verbose = true) {
     return chosen;
 }
 
+struct XferStats {
+    std::atomic<long long> bytes_up{0}, bytes_dn{0}, n_up{0}, n_dn{0};
+    void reset() { bytes_up = 0; bytes_dn = 0; n_up = 0; n_dn = 0; }
+};
+inline XferStats& xfer_stats() { static XferStats s; return s; }
+inline void xfer_note_up(std::size_t b) { xfer_stats().bytes_up += (long long)b; xfer_stats().n_up++; }
+inline void xfer_note_dn(std::size_t b) { xfer_stats().bytes_dn += (long long)b; xfer_stats().n_dn++; }
+
 // This functions as a CUDA vector wrapper
 template <typename T>
 struct DeviceArray {
@@ -120,6 +129,7 @@ struct DeviceArray {
         if (n_ == 0) return;
         if (n_ > n) throw std::runtime_error("DeviceArray::up: source larger than allocation");
         CUDA_CHECK(cudaMemcpy(d, h, n_ * sizeof(T), cudaMemcpyHostToDevice));
+        xfer_note_up(n_ * sizeof(T));
     }
 
     // Move from GPU to CPU
@@ -127,6 +137,7 @@ struct DeviceArray {
         if (n_ == 0) return;
         if (n_ > n) throw std::runtime_error("DeviceArray::down: request larger than allocation");
         CUDA_CHECK(cudaMemcpy(h, d, n_ * sizeof(T), cudaMemcpyDeviceToHost));
+        xfer_note_dn(n_ * sizeof(T));
     }
 
     // Clear GPU memory

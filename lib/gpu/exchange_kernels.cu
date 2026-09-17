@@ -129,10 +129,12 @@ void ex_S_swap(const real* rho_swap, const real* dets_psi, const real* Minv_batc
 
 static void copy_down_range(void* dst, const void* dev, std::size_t off_bytes, std::size_t n_bytes) {
     CUDA_CHECK(cudaMemcpy(dst, (const char*)dev + off_bytes, n_bytes, cudaMemcpyDeviceToHost));
+    xfer_note_dn(n_bytes);
 }
 
 static void copy_up_range(void* dev, const void* src, std::size_t off_bytes, std::size_t n_bytes) {
     CUDA_CHECK(cudaMemcpy((char*)dev + off_bytes, src, n_bytes, cudaMemcpyHostToDevice));
+    xfer_note_up(n_bytes);
 }
 
 // If rank of walker matrix is deficient go to CPU, have slower method that doesn't evaluate inverse and so is more stable as for small eigenvalues inverse computaiton is unstable

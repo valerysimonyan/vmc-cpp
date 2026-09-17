@@ -2,6 +2,7 @@
 #include "../lib/gpu/arena.h"
 #include "../lib/gpu/eval.h"
 #include "../lib/gpu/jet_eval.h"
+#include "../lib/gpu/record_device.h"
 #include "../lib/gpu/exchange_kernels.h"
 #include "../lib/gpu/local_e.h"
 #include "../lib/gpu/gpu_sampler.h"
@@ -319,7 +320,11 @@ static void test_assemble_O(const Ansatz& a) {
     CHECK(n > 0, "no valid walkers to compare O on");
 }
 
-// --- F4: determinism --------------------------------------------------------------
+// --- F4: determinism, and the device record path's per-walker statistics ---------
+// Two full device record passes from an identical start must agree bitwise in
+// everything download_iteration returns. The per-walker sums are accumulated on
+// device; E_pool's rows are downloaded independently, so the host can rebuild
+// Ew / E2w / nw from them in the same add order and require BITWISE equality.
 static void test_determinism(const Ansatz& a, cublasHandle_t h) {
     const int B = 256, records = 2;
     ThreadPool pool(4);
@@ -328,34 +333,57 @@ static void test_determinism(const Ansatz& a, cublasHandle_t h) {
     init_batch(wb0, a, &pool, wss);
 
     Dev dv(a);
+    dv.ds.grow_phase5(a, false); dv.ds.grow_phase52(false); dv.ds.grow_phase53(false);
     PinnedArray st; dv.ds.upload_params(a, st);
-    const std::size_t P = a.n_params();
+    const std::size_t P = a.n_params(), Ns = (std::size_t)B * records;
 
-    struct Run { std::vector<double> E, O; std::vector<uint8_t> v; BatchStats bs; };
+    struct Run { IterStatsHost it; std::vector<double> O; long long up = 0, dn = 0; };
     auto run_once = [&](Run& R) {
         WalkerBatch wb = wb0;
         upload_and_reset(dv.ds, wb, st);
         eval_logp_batch(dv.ds, h, B);
         therm_batch_device(dv.ds, h, B, 0.5, 2);
-        R.E.assign((std::size_t)B*records, 0.0); R.v.assign((std::size_t)B*records, 0);
-        R.O.assign((std::size_t)B*records*P, 0.0);
-        record_batch_hybrid(dv.ds, h, wb, a, 0.5, records, &pool, wss, st, R.E, R.O, R.v, R.bs);
+        record_batch_device(dv.ds, h, a, wss[0], B, 0.5, records, /*with_O=*/true);
+        xfer_stats().reset();
+        download_iteration(dv.ds, B, records, st, R.it);
+        R.up = xfer_stats().bytes_up; R.dn = xfer_stats().bytes_dn;
+        R.O.resize(Ns * P); dv.ds.O_pool.down(R.O.data(), R.O.size());
     };
     Run r1, r2; run_once(r1); run_once(r2);
 
     std::size_t dE = 0, dv_ = 0, dO = 0;
-    for (std::size_t q = 0; q < r1.v.size(); q++) {
-        if (r1.v[q] != r2.v[q]) dv_++;
-        if (r1.v[q] && r1.E[q] != r2.E[q]) dE++;
-        if (r1.v[q]) for (std::size_t k = 0; k < P; k++) if (r1.O[q*P+k] != r2.O[q*P+k]) dO++;
+    for (std::size_t q = 0; q < Ns; q++) {
+        if (r1.it.valid_pool[q] != r2.it.valid_pool[q]) dv_++;
+        if (r1.it.valid_pool[q] && r1.it.E_pool[q] != r2.it.E_pool[q]) dE++;
+        if (r1.it.valid_pool[q]) for (std::size_t k = 0; k < P; k++) if (r1.O[q*P+k] != r2.O[q*P+k]) dO++;
     }
-    const bool stats_eq = r1.bs.E_sum == r2.bs.E_sum && r1.bs.E2_sum == r2.bs.E2_sum && r1.bs.l2_sum == r2.bs.l2_sum
-                       && r1.bs.r2_sum == r2.bs.r2_sum && r1.bs.n_valid == r2.bs.n_valid && r1.bs.Ew_sum == r2.bs.Ew_sum;
-    std::printf("  determinism (2 full hybrid-v2 runs, B=%d x %d records): E_pool %zu, valid_pool %zu, O_pool %zu differ; stats %s  (%lld valid)\n",
-                B, records, dE, dv_, dO, stats_eq ? "identical" : "DIFFER", r1.bs.n_valid);
-    CHECK(dE == 0 && dv_ == 0 && dO == 0 && stats_eq, "hybrid-v2 iteration is not bit-reproducible");
-    CHECK(r1.bs.n_valid > 0, "no valid samples recorded");
+    const BatchStats& b1 = r1.it.bs; const BatchStats& b2 = r2.it.bs;
+    const bool stats_eq = b1.E_sum == b2.E_sum && b1.E2_sum == b2.E2_sum && b1.l2_sum == b2.l2_sum && b1.r2_sum == b2.r2_sum
+                       && b1.n_valid == b2.n_valid && b1.Ew_sum == b2.Ew_sum && r1.it.acc == r2.it.acc && r1.it.sp_acc == r2.it.sp_acc;
+    std::printf("  determinism (2 device record passes, B=%d x %d records): E_pool %zu, valid_pool %zu, O_pool %zu differ; stats %s  (%lld valid)\n",
+                B, records, dE, dv_, dO, stats_eq ? "identical" : "DIFFER", b1.n_valid);
+    CHECK(dE == 0 && dv_ == 0 && dO == 0 && stats_eq, "device record path is not bit-reproducible");
+    CHECK(b1.n_valid > 0, "no valid samples recorded");
+
+    // Per-walker sums rebuilt from the downloaded E_pool rows, record order.
+    std::size_t bad = 0;
+    for (int w = 0; w < B; w++) {
+        double Ew = 0.0, E2w = 0.0; int nw = 0;
+        for (int r = 0; r < records; r++) {
+            const std::size_t q = (std::size_t)r * B + w;
+            if (!r1.it.valid_pool[q]) continue;
+            const double E = r1.it.E_pool[q];
+            Ew += E; E2w += E * E; nw++;
+        }
+        if (Ew != b1.Ew_sum[w] || E2w != b1.E2w_sum[w] || nw != b1.nw[w]) bad++;
+    }
+    const long long expect_dn = (long long)(Ns * (sizeof(double) + 1) + (std::size_t)B * (4*sizeof(double) + sizeof(int) + 3*sizeof(long long)));
+    std::printf("  device per-walker Ew/E2w/nw vs rebuilt from downloaded E_pool: %zu of %d walkers differ;  download_iteration bytes up %lld down %lld (expect 0 / %lld)\n",
+                bad, B, r1.up, r1.dn, expect_dn);
+    CHECK(bad == 0, "device per-walker accumulation is not record_one_walker's");
+    CHECK(r1.up == 0 && r1.dn == expect_dn, "download_iteration transfers more than its contract");
 }
+
 
 int main() {
     gpu_select_device(true);

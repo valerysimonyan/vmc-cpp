@@ -66,6 +66,7 @@ endif()
 target_include_directories(vmc_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(vmc_core PUBLIC Threads::Threads)
 
+
 # ---------------------------------------------------------------------------
 # CUDA, entirely optional
 # ---------------------------------------------------------------------------
@@ -112,7 +113,8 @@ endif()
 
 add_executable(main main.cpp)
 target_link_libraries(main PRIVATE vmc_core)
-
+add_executable(frozen_eval tests/frozen_eval_main.cpp)
+target_link_libraries(frozen_eval PRIVATE vmc_core)
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -172,5 +174,12 @@ if(VMC_CUDA)
         target_compile_options(test_backprop PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-fmad=false>)
     endif()
     add_test(NAME test_backprop COMMAND test_backprop)
-
+    add_executable(test_sr_device tests/test_sr_device.cu)
+    target_link_libraries(test_sr_device PRIVATE vmc_core)
+    target_compile_definitions(test_sr_device PRIVATE VMC_CUDA_SYNCCHECK)
+    set_target_properties(test_sr_device PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+    if(VMC_CUDA_STRICT_FP)
+        target_compile_options(test_sr_device PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-fmad=false>)
+    endif()
+    add_test(NAME test_sr_device COMMAND test_sr_device)
 endif()

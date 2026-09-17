@@ -102,6 +102,37 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose) {
     }
 }
 
+std::size_t DeviceState::phase53_bytes() const {
+    return Ew_d.bytes() + E2w_d.bytes() + l2w_d.bytes() + r2w_d.bytes() + nw_d.bytes() + pack_d.bytes();
+}
+
+void DeviceState::grow_phase53(bool verbose) {
+    Ew_d.alloc(B); E2w_d.alloc(B); l2w_d.alloc(B); r2w_d.alloc(B); nw_d.alloc(B);
+    pack_d.alloc(Ns_max * (sizeof(double) + sizeof(unsigned char))
+                 + B * (4*sizeof(double) + sizeof(int) + 3*sizeof(long long)));
+    if (verbose)
+        std::printf("DeviceState::grow_phase53: walker stats + pack buffer %.3f MiB\n", (double)phase53_bytes() / (1024.0*1024.0));
+}
+
+
+std::size_t DeviceState::phase52_bytes() const {
+    std::size_t b = 0;
+    for (const DeviceArray<double>* x : {&mask_d, &E_clip_d, &t_ns_d, &O_exp_d, &S_diag_d, &grad_d, &v_rms_d, &d_rms_d,
+                                         &M_inv_d, &cg_r, &cg_z, &cg_p, &cg_Ap, &delta_d, &S_delta_d})
+        b += x->bytes();
+    return b;
+}
+
+void DeviceState::grow_phase52(bool verbose) {
+    for (DeviceArray<double>* x : {&mask_d, &E_clip_d, &t_ns_d}) x->alloc(Ns_max);
+    for (DeviceArray<double>* x : {&O_exp_d, &S_diag_d, &grad_d, &v_rms_d, &d_rms_d, &M_inv_d,
+                                   &cg_r, &cg_z, &cg_p, &cg_Ap, &delta_d, &S_delta_d}) x->alloc(P);
+    v_rms_d.zero();      // descent() starts v_rms at 0 ...
+    delta_d.zero();      // ... and delta (the CG warm start) at 0
+    if (verbose)
+        std::printf("DeviceState::grow_phase52: SR vectors %.3f MiB\n", (double)phase52_bytes() / (1024.0*1024.0));
+}
+
 std::size_t DeviceState::phase5_bytes() const {
     return cache_h.bytes() + cache_rho.bytes() + cache_orb.bytes()
          + bp_a.bytes() + bp_b.bytes() + dpsi_dxi.bytes() + bp_wt.bytes();

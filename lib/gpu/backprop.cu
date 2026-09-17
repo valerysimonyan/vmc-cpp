@@ -190,6 +190,7 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
 
     real alpha;
     CUDA_CHECK(cudaMemcpyAsync(&alpha, ds.params.d + (P - 1), sizeof(real), cudaMemcpyDeviceToHost, stream));
+    xfer_note_dn(sizeof(real));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     // rho's output layer is linear, so its stashed pre-activation IS rho.

@@ -131,6 +131,7 @@ void envelope_logp(const real* x_sh, const real* S, const real* params, std::siz
     if (B <= 0) return;
     real alpha_h;
     CUDA_CHECK(cudaMemcpyAsync(&alpha_h, params + (P - 1), sizeof(real), cudaMemcpyDeviceToHost, stream));
+    xfer_note_dn(sizeof(real));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     const int threads = 256;

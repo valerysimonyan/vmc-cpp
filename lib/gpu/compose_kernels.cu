@@ -71,6 +71,7 @@ void psi_jet_compose(const real* J_rho, const real* J_det, const real* x_sh, con
     if (Bc <= 0) return;
     real alpha_h;
     CUDA_CHECK(cudaMemcpyAsync(&alpha_h, params + (P - 1), sizeof(real), cudaMemcpyDeviceToHost, stream));
+    xfer_note_dn(sizeof(real));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     const int threads = 128;
     psi_jet_compose_kernel<<<(Bc + threads - 1)/threads, threads, 0, stream>>>(J_rho, J_det, x_sh, alpha_h, J_psi, S_jet_v, Bc, w_off, B_tot);
@@ -181,6 +182,7 @@ void validity_jet(const real* J_psi, const real* S, const real* x_sh, const real
     if (Bc <= 0) return;
     real alpha_h;
     CUDA_CHECK(cudaMemcpyAsync(&alpha_h, params + (P - 1), sizeof(real), cudaMemcpyDeviceToHost, stream));
+    xfer_note_dn(sizeof(real));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     const int threads = 128;
     validity_jet_kernel<<<(Bc + threads - 1)/threads, threads, 0, stream>>>(J_psi, S, x_sh, alpha_h, E_kin, psi_dbl, valid, Bc, w_off, B_tot);
