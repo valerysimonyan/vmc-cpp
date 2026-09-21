@@ -1,5 +1,6 @@
 #include "backprop.h"
 #include "arena.h"
+#include "prof.h"
 
 #include <algorithm>
 #include <cmath>
@@ -121,18 +122,22 @@ void backprop_net(cublasHandle_t handle, const DeviceNet& dn, const NetCache& ca
     for (int l = n_layers - 1; l >= 0; l--) {
         const DeviceLayer& L = dn.layers[l];
 
-        db_rows(cur, R, L.out_w, Bc, O_first, L.b_off, P, stream);
-        dW_strided(handle, cache.a_in[l].d + row0 * L.in_w, cur, R, L.in_w, L.out_w, Bc, O_first + L.w_off, (long long)P, stream);
-
+        {
+            VMC_PROF("dW_gemms", stream);
+            db_rows(cur, R, L.out_w, Bc, O_first, L.b_off, P, stream);
+            dW_strided(handle, cache.a_in[l].d + row0 * L.in_w, cur, R, L.in_w, L.out_w, Bc, O_first + L.w_off, (long long)P, stream);
+        }
 
         if (l == 0 && !dinput) break;
 
         real* dst = (l == 0) ? dinput : nxt;
-        delta_prop(cur, params + L.w_off, WT, dst, rows, L.in_w, L.out_w, stream);
-        if (l > 0) {
-            act_grad_mul(dst, cache.z[l - 1].d + row0 * L.in_w, (std::size_t)rows * L.in_w, dn.act, stream);
-            std::swap(cur, nxt);
+        {
+            VMC_PROF("delta_prop", stream);
+            delta_prop(cur, params + L.w_off, WT, dst, rows, L.in_w, L.out_w, stream);
+            if (l > 0) act_grad_mul(dst, cache.z[l - 1].d + row0 * L.in_w, (std::size_t)rows * L.in_w, dn.act, stream);
         }
+        if (l > 0) std::swap(cur, nxt);
+
     }
 }
 
@@ -189,9 +194,12 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
     const std::size_t P = ds.P;
 
     real alpha;
-    CUDA_CHECK(cudaMemcpyAsync(&alpha, ds.params.d + (P - 1), sizeof(real), cudaMemcpyDeviceToHost, stream));
-    xfer_note_dn(sizeof(real));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    {
+        VMC_PROF_HOST("/transfers/alpha_dn");
+        CUDA_CHECK(cudaMemcpyAsync(&alpha, ds.params.d + (P - 1), sizeof(real), cudaMemcpyDeviceToHost, stream));
+        xfer_note_dn(sizeof(real));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
 
     // rho's output layer is linear, so its stashed pre-activation IS rho.
     const real* rho = ds.cache_rho.z.back().d;
@@ -201,10 +209,11 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
         const int Bc = std::min(C, B - w_off);
         double* O_first = ds.O_pool.d + ((std::size_t)r * B + (std::size_t)w_off) * P;
 
-        CUDA_CHECK(cudaMemcpy(ds.bp_a.d, ds.dets_psi.d + (std::size_t)w_off * K, (std::size_t)Bc * K * sizeof(real), cudaMemcpyDeviceToDevice));
+        { VMC_PROF("seeds", stream); CUDA_CHECK(cudaMemcpy(ds.bp_a.d, ds.dets_psi.d + (std::size_t)w_off * K, (std::size_t)Bc * K * sizeof(real), cudaMemcpyDeviceToDevice)); }
         backprop_net(handle, ds.rho_net_d, ds.cache_rho, ds.params.d, ds.bp_a.d, ds.bp_b.d, ds.bp_wt.d, 1, Bc, w_off, O_first, P, ds.dpsi_dxi.d, stream);
 
         {
+            VMC_PROF("seeds", stream);
             const std::size_t total = (std::size_t)Bc * N * m_feat;
             h_seed_kernel<<<(unsigned)((total + threads - 1)/threads), threads, 0, stream>>>(ds.dpsi_dxi.d, ds.bp_a.d, Bc);
             cuda_sync_check("h_seed");
@@ -213,6 +222,7 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
 
         // orb: rho_j * det_j * Minv_j[i][k], R = N.
         {
+            VMC_PROF("seeds", stream);
             const std::size_t total = (std::size_t)Bc * N * K * N;
             orb_seed_kernel<<<(unsigned)((total + threads - 1)/threads), threads, 0, stream>>>(
                 rho + (std::size_t)w_off * K, ds.dets_psi.d + (std::size_t)w_off * K,
@@ -221,7 +231,9 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
         }
         backprop_net(handle, ds.orb_net_d, ds.cache_orb, ds.params.d, ds.bp_a.d, ds.bp_b.d, ds.bp_wt.d, N, Bc, w_off, O_first, P, nullptr, stream);
 
-        o_finalize_kernel<<<(unsigned)Bc, 128, 0, stream>>>(O_first, ds.valid_loc.d, ds.S.d, ds.x_sh.d, alpha, P, Bc, w_off);
+        { VMC_PROF("o_finalize", stream);
+          o_finalize_kernel<<<(unsigned)Bc, 128, 0, stream>>>(O_first, ds.valid_loc.d, ds.S.d, ds.x_sh.d, alpha, P, Bc, w_off);
+          cuda_sync_check("o_finalize"); }
         cuda_sync_check("o_finalize");
     }
 }

@@ -4,6 +4,7 @@
 #include "local_e.h"
 #include "exchange_kernels.h"
 #include "backprop.h"
+#include "prof.h"
 
 #include <chrono>
 #include <cstring>
@@ -47,24 +48,33 @@ void record_batch_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a
 
     for (int r = 0; r < records; r++) {
         auto t0 = clk::now();
-        for (int sweep = 0; sweep < sweeps_between_records; sweep++) {
-            sweep_device(ds, handle, B, step, stream);
-            recenter_device(ds, B, stream);
+        {
+            VMC_PROF("/record_sweeps", stream);
+            for (int sweep = 0; sweep < sweeps_between_records; sweep++) {
+                sweep_device(ds, handle, B, step, stream);
+                recenter_device(ds, B, stream);
+            }
+            CUDA_CHECK(cudaStreamSynchronize(stream));
         }
-        CUDA_CHECK(cudaStreamSynchronize(stream));
         tm.sweep_ms += ms_since(t0);
 
         t0 = clk::now();
+        VMC_PROF("/record", stream);
         // The cached eval: with_O stashes this pass's activations, and nothing
         // between here and assemble_O_batch below moves a walker.
         tm.n_fallback += eval_local_E_device(ds, handle, a, ws, B, stream, with_O);
-        pool_write_row(ds.E_loc.d, ds.valid_loc.d, ds.E_pool.d, ds.valid_pool.d, r, B, stream);
-        walker_stats_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(ds.E_loc.d, ds.l2_out.d, ds.valid_loc.d, ds.x.d, ds.Ew_d.d, ds.E2w_d.d, ds.l2w_d.d, ds.r2w_d.d, ds.nw_d.d, B);
+        {
+            VMC_PROF("stats", stream);
+            pool_write_row(ds.E_loc.d, ds.valid_loc.d, ds.E_pool.d, ds.valid_pool.d, r, B, stream);
+            walker_stats_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(ds.E_loc.d, ds.l2_out.d, ds.valid_loc.d, ds.x.d, ds.Ew_d.d, ds.E2w_d.d, ds.l2w_d.d, ds.r2w_d.d, ds.nw_d.d, B);
+            cuda_sync_check("walker_stats");
+        }
         CUDA_CHECK(cudaStreamSynchronize(stream));
         tm.localE_ms += ms_since(t0);
 
         if (with_O) {
             t0 = clk::now();
+            VMC_PROF("o_assemble", stream);
             assemble_O_batch(ds, handle, r, B, stream);
             CUDA_CHECK(cudaStreamSynchronize(stream));
             tm.o_ms += ms_since(t0);
@@ -101,10 +111,20 @@ void download_iteration(DeviceState& ds, int B, int records, PinnedArray& stagin
     }
     staging.ensure(total);
     unsigned char* h = staging.as<unsigned char>();
-    ds.pack_d.down(h, total);
+    {
+        // Stage on device, then ONE copy across the bus.
+        VMC_PROF_HOST("/transfers/download_iter");
+        for (const Seg& s : segs) {
+            CUDA_CHECK(cudaMemcpy(ds.pack_d.d + off, s.src, s.bytes, cudaMemcpyDeviceToDevice));
+            off += s.bytes;
+        }
+        ds.pack_d.down(h, total);
+    }
 
+    VMC_PROF_HOST("/host/reduce_iter");
     off = 0;
     auto take = [&](void* dst, std::size_t bytes) { std::memcpy(dst, h + off, bytes); off += bytes; };
+
     out.E_pool.resize(Ns);     take(out.E_pool.data(), Ns * sizeof(double));
     out.valid_pool.resize(Ns); take(out.valid_pool.data(), Ns);
     BatchStats& bs = out.bs;

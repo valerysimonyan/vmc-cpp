@@ -4,6 +4,8 @@
 /*
 !/.gitignore
 !/main.cpp
+!/README.md
+!/BENCH.md
 !/lib/
 /lib/*
 !/lib/*.h

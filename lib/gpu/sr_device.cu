@@ -1,5 +1,6 @@
 #include "sr_device.h"
 #include "arena.h"
+#include "prof.h"
 #include "../constants.h"
 
 #include <algorithm>
@@ -11,6 +12,7 @@ static void check_blas(cublasStatus_t st, const char* what) {
     if (st != CUBLAS_STATUS_SUCCESS) throw std::runtime_error(std::string(what) + ": cuBLAS status " + std::to_string((int)st));
 }
 static double ddot(cublasHandle_t h, std::size_t n, const double* a, const double* b, long long* n_dl) {
+    VMC_PROF_HOST("scalars_dn");   // host pointer mode: this call synchronises
     double r = 0.0;
     check_blas(cublasDdot(h, (int)n, a, 1, b, 1, &r), "cublasDdot");   // host pointer mode: blocks, one scalar down
     if (n_dl) (*n_dl)++;
@@ -163,6 +165,7 @@ __global__ void apply_tail_kernel(double* __restrict__ out, const double* __rest
 
 // Full SR apply
 void SROpDevice::apply(const double* v, double* out, bool raw) {
+    VMC_PROF("matvec", 0);
     cublasSetStream(h, 0);
     const double one = 1.0, zero = 0.0;
     double Oexp_v = 0.0;
@@ -208,8 +211,7 @@ CGResult cg_solve_device(cublasHandle_t h, const DeviceMatVec& matvec, const dou
 
     matvec(x, Ap);                                                    
     sub_kernel<<<nb, T256, 0, stream>>>(b, Ap, r, n);
-    jacobi_kernel<<<nb, T256, 0, stream>>>(M_inv_diag, r, z, n);
-    cuda_sync_check("cg init");
+    { VMC_PROF("precond", stream); jacobi_kernel<<<nb, T256, 0, stream>>>(M_inv_diag, r, z, n); cuda_sync_check("cg init"); }
     CUDA_CHECK(cudaMemcpy(p, z, n * sizeof(double), cudaMemcpyDeviceToDevice));
     double rz = ddot(h, n, r, z, n_dl);
 
@@ -228,8 +230,7 @@ CGResult cg_solve_device(cublasHandle_t h, const DeviceMatVec& matvec, const dou
         rel_residual = std::sqrt(ddot(h, n, r, r, n_dl)) / b_norm;
         if (rel_residual < rel_tol) return {i + 1, rel_residual, true};
 
-        jacobi_kernel<<<nb, T256, 0, stream>>>(M_inv_diag, r, z, n);
-        cuda_sync_check("cg jacobi");
+        { VMC_PROF("precond", stream); jacobi_kernel<<<nb, T256, 0, stream>>>(M_inv_diag, r, z, n); cuda_sync_check("cg jacobi"); }
         double rz_new = ddot(h, n, r, z, n_dl);
         double beta = rz_new / rz;
         p_update_kernel<<<nb, T256, 0, stream>>>(p, z, beta, n);
@@ -265,8 +266,11 @@ SRStepLog SR_step_device(DeviceState& ds, cublasHandle_t h, Ansatz& a, int iter,
     double sr_lr = std::max(sr_eta * std::pow(0.999, iter), 0.001);
 
     // sr_op.init: S_diag (O_exp, mask and d_rms are already current)
-    S_diag_device(ds.O_pool.d, ds.valid_pool.d, ds.O_exp_d.d, n_samples, P, n_valid, ds.S_diag_d.d, stream);
-    M_inv_device(ds.S_diag_d.d, ds.d_rms_d.d, lambda_t, ds.M_inv_d.d, P, stream);
+    {
+        VMC_PROF("sr/o_stats", stream);
+        S_diag_device(ds.O_pool.d, ds.valid_pool.d, ds.O_exp_d.d, n_samples, P, n_valid, ds.S_diag_d.d, stream);
+        M_inv_device(ds.S_diag_d.d, ds.d_rms_d.d, lambda_t, ds.M_inv_d.d, P, stream);
+    }
 
     SROpDevice op;
     op.h = h; op.O_pool = ds.O_pool.d; op.O_exp = ds.O_exp_d.d; op.m = ds.mask_d.d; op.S_diag = ds.S_diag_d.d;
@@ -274,29 +278,38 @@ SRStepLog SR_step_device(DeviceState& ds, cublasHandle_t h, Ansatz& a, int iter,
     op.lambda_diag = lambda_t; op.eps_abs = sr_eps;
     auto matvec = [&op, &dl](const double* v, double* out) { op.apply(v, out, false); dl++; };   // 1 scalar (Oexp.v) per apply
 
-    CGResult cg = cg_solve_device(h, matvec, ds.grad_d.d, ds.delta_d.d, ds.M_inv_d.d, P, sr_cg_tol, sr_cg_maxit,
-                                  ds.cg_r.d, ds.cg_z.d, ds.cg_p.d, ds.cg_Ap.d, &dl, stream);
-
-    op.apply(ds.delta_d.d, ds.S_delta_d.d, true); dl++;
-    double q = ddot(h, P, ds.delta_d.d, ds.S_delta_d.d, &dl);
-    if (q > sr_trust_r2) {
-        const double scale = std::sqrt(sr_trust_r2 / q);
-        check_blas(cublasDscal(h, (int)P, &scale, ds.delta_d.d, 1), "SR_step_device trust scale");
-    }
-    double delta_norm_raw = std::sqrt(ddot(h, P, ds.delta_d.d, ds.delta_d.d, &dl));
-    bool norm_capped = delta_norm_raw > sr_delta_max;
-    if (norm_capped) {
-        const double scale = sr_delta_max / delta_norm_raw;
-        check_blas(cublasDscal(h, (int)P, &scale, ds.delta_d.d, 1), "SR_step_device norm cap");
-        std::cerr << "SR_step: norm cap triggered -- raw ||delta||=" << delta_norm_raw
-                  << " > sr_delta_max=" << sr_delta_max << ", rescaled.\n";
+    CGResult cg{};
+    {
+        VMC_PROF("sr/cg", stream);
+        cg = cg_solve_device(h, matvec, ds.grad_d.d, ds.delta_d.d, ds.M_inv_d.d, P, sr_cg_tol, sr_cg_maxit,
+                             ds.cg_r.d, ds.cg_z.d, ds.cg_p.d, ds.cg_Ap.d, &dl, stream);
     }
 
-    const double delta_norm = std::sqrt(ddot(h, P, ds.delta_d.d, ds.delta_d.d, &dl));
+    double q = 0.0, delta_norm = 0.0;
+    bool norm_capped = false;
+    {
+        VMC_PROF("sr/trust", stream);
+        op.apply(ds.delta_d.d, ds.S_delta_d.d, true); dl++;
+        q = ddot(h, P, ds.delta_d.d, ds.S_delta_d.d, &dl);
+        if (q > sr_trust_r2) {
+            const double scale = std::sqrt(sr_trust_r2 / q);
+            check_blas(cublasDscal(h, (int)P, &scale, ds.delta_d.d, 1), "SR_step_device trust scale");
+        }
+        double delta_norm_raw = std::sqrt(ddot(h, P, ds.delta_d.d, ds.delta_d.d, &dl));
+        norm_capped = delta_norm_raw > sr_delta_max;
+        if (norm_capped) {
+            const double scale = sr_delta_max / delta_norm_raw;
+            check_blas(cublasDscal(h, (int)P, &scale, ds.delta_d.d, 1), "SR_step_device norm cap");
+            std::cerr << "SR_step: norm cap triggered -- raw ||delta||=" << delta_norm_raw
+                      << " > sr_delta_max=" << sr_delta_max << ", rescaled.\n";
+        }
+        delta_norm = std::sqrt(ddot(h, P, ds.delta_d.d, ds.delta_d.d, &dl));
+    }
 
     // The one per-iteration vector download. The warm start stays on device.
     delta_host.resize(P);
-    ds.delta_d.down(delta_host.data(), P);
+    { VMC_PROF_HOST("/transfers/delta_dn"); ds.delta_d.down(delta_host.data(), P); }
+
     for (std::size_t j = 0; j < P; j++) a.add_to_param(j, -sr_lr * delta_host[j]);
 
     if (n_dl) *n_dl = dl;

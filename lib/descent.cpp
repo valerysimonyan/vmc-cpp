@@ -24,6 +24,7 @@
 #include "gpu/sampler_kernels.h"
 #include "gpu/record_device.h"
 #include "gpu/sr_device.h"
+#include "gpu/prof.h"
 #include <cublas_v2.h>
 
 inline constexpr bool debug_walker_download_at_checkpoint = false;
@@ -313,14 +314,18 @@ DescentResult descent(Ansatz& a) {
 
 #ifdef VMC_CUDA
         xfer_stats().reset();
-        ds.upload_params(a, staging);                                   // UP: params (P)
+        { VMC_PROF_HOST("/transfers/params_up"); ds.upload_params(a, staging); }   // UP: params (P)
         eval_logp_batch(ds, cublas, n_walkers);
 
         // Thermalize after the parameter update, then the record rounds: sweeps,
         // device local_E, O assembly -- nothing crosses the bus until the end.
         auto tA = std::chrono::steady_clock::now();
-        r.acceptance = therm_batch_device(ds, cublas, n_walkers, step, therm_re_sweep);
+        {
+            VMC_PROF("/therm_sweeps", 0);
+            r.acceptance = therm_batch_device(ds, cublas, n_walkers, step, therm_re_sweep);
+        }
         auto tB = std::chrono::steady_clock::now();
+
         RecordTimes rtimes;
         record_batch_device(ds, cublas, a, wss[0], n_walkers, step, records_now, /*with_O=*/true, &rtimes);
         auto tC = std::chrono::steady_clock::now();
@@ -361,11 +366,19 @@ DescentResult descent(Ansatz& a) {
         r.r_rms = std::sqrt(bs.r2_sum / (double)bs.n_valid);
         // ... and its O_exp / clipped gradient on device. The clip bounds are the
         // host's median/MAD over the downloaded E_pool; they go UP as kernel args.
-        build_mask(ds.valid_pool.d, ds.mask_d.d, n_samples);
-        O_exp_device(cublas, ds.O_pool.d, ds.mask_d.d, n_samples, n_params, bs.n_valid, ds.O_exp_d.d);
-        const ClipStats clip = clip_stats_host(it.E_pool, it.valid_pool, n_samples, bs.n_valid);
-        grad_device(cublas, ds.O_pool.d, ds.E_pool.d, ds.valid_pool.d, ds.O_exp_d.d, n_samples, n_params, bs.n_valid,
-                    clip, ds.E_clip_d.d, ds.grad_d.d);
+        {
+            VMC_PROF("/sr/o_stats", 0);
+            build_mask(ds.valid_pool.d, ds.mask_d.d, n_samples);
+            O_exp_device(cublas, ds.O_pool.d, ds.mask_d.d, n_samples, n_params, bs.n_valid, ds.O_exp_d.d);
+        }
+        ClipStats clip{};
+        { VMC_PROF_HOST("/host/clip_stats"); clip = clip_stats_host(it.E_pool, it.valid_pool, n_samples, bs.n_valid); }
+        {
+            VMC_PROF("/sr/grad", 0);
+            grad_device(cublas, ds.O_pool.d, ds.E_pool.d, ds.valid_pool.d, ds.O_exp_d.d, n_samples, n_params, bs.n_valid,
+                        clip, ds.E_clip_d.d, ds.grad_d.d);
+        }
+
 #else
         compute_obs(bs, r, n_params, E_pool, O_pool, valid_pool, n_samples, &pool, O_exp, grad);
 #endif
@@ -439,6 +452,7 @@ DescentResult descent(Ansatz& a) {
         long long bytes_up = 0, bytes_dn = 0;
 #ifdef VMC_CUDA
         if (i >= N_gd) {   // SR phase: grad stays on device; one scalar down for the log
+            VMC_PROF_HOST("/transfers/grad_alpha_dn");
             CUDA_CHECK(cudaMemcpy(&grad_alpha, ds.grad_d.d + alpha_idx, sizeof(double), cudaMemcpyDeviceToHost));
             xfer_note_dn(sizeof(double));
         }
@@ -454,6 +468,14 @@ DescentResult descent(Ansatz& a) {
             << metro_ms << "," << local_E_ms << "," << o_ms << "," << sr_ms << "," <<  gpu_ms << "," << ms << "," << r.L2 << "," << rms_damp_mean << "," << xfer_ms << "," << bytes_up << "," << bytes_dn << "," << n_scalar_dl << "\n";
         csv.flush();
 
+        #ifdef VMC_CUDA
+        // Profiling: iteration 0 pays for cuBLAS workspace allocation and the
+        // first-touch of every arena page, so it is thrown away rather than
+        // averaged in. Reports are cumulative from iteration 1.
+        prof_iteration_end(ms);
+        if (i == 0) prof_reset();
+        else if ((i + 1) % prof_report_every == 0) prof_report(n_walkers, records_now, n_params, "descent");
+#endif
         if (i < N_gd) std::cout << "ADAM|"; else std::cout << "SR|";
         std::cout << "Step: " << i << ": E_exp: " << r.El_exp << ", E_err: " << r.El_err
             << ", var: " << r.var << ", acceptance: " << r.acceptance
@@ -473,6 +495,7 @@ DescentResult descent(Ansatz& a) {
     }
     save_checkpoint("final_checkpoint.txt", a);
 #ifdef VMC_CUDA
+    prof_report(n_walkers, records_per_iter, n_params, "descent run end");
     ds.download_walkers(wb, staging);     // run end: the one sanctioned x/s/t download
     cublasDestroy(cublas);
 #endif
@@ -533,8 +556,12 @@ DescentResult evaluate_frozen(Ansatz& a) {
     bs_all.n_valid = bs_all.n_invalid = 0;
 
     double acc_sum = 0.0, spin_acc_sum = 0.0, tau_acc_sum = 0.0;
-
+    
+#ifdef VMC_CUDA
+    prof_reset();   // the frozen eval is profiled in its own right, not as descent
+#endif
     for (int i = 0; i < eval_iters; i++) {
+        auto t_it0 = std::chrono::steady_clock::now();
         BatchStats bs;
         int total_sweeps = therm_re_sweep + records_per_iter_max * sweeps_between_records;
         double spin_acc, tau_acc;

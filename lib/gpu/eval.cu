@@ -1,4 +1,5 @@
 #include "eval.h"
+#include "prof.h"
 #include "det_kernels.h"
 #include "net_kernels.h"
 #include "net_forward.h"
@@ -39,20 +40,22 @@ __global__ void xi_reduce_combo_kernel(const real* __restrict__ tab_h, const rea
     xi[idx] = acc;    
 }
 
-// Evaluate Psi through the chain
+// Evaluate Psi through the chain, assign timers for every step
 static void eval_chain(DeviceState& ds, cublasHandle_t handle, int B, const real* x_src, real* S_dst, real* logp_dst, cudaStream_t stream, bool stash = false) {
-    shift_to_com(x_src, ds.x_sh.d, B, stream);
-    build_feat(ds.x_sh.d, ds.s.d, ds.t.d, ds.feat_in.d, B, stream);
+    {
+        VMC_PROF("net_fwd", stream);
+        shift_to_com(x_src, ds.x_sh.d, B, stream);
+        build_feat(ds.x_sh.d, ds.s.d, ds.t.d, ds.feat_in.d, B, stream);
 
-    net_forward(handle, ds.h_net_d, ds.params.d, ds.feat_in.d, B*N, ds.act_a.d, ds.act_b.d, ds.h_out.d, stream, stash ? &ds.cache_h : nullptr);
-    xi_reduce(ds.h_out.d, ds.xi.d, B, stream);
-    net_forward(handle, ds.rho_net_d, ds.params.d, ds.xi.d, B, ds.act_a.d, ds.act_b.d, ds.rho_out.d, stream, stash ? &ds.cache_rho : nullptr);
-    net_forward(handle, ds.orb_net_d, ds.params.d, ds.feat_in.d, B*N, ds.act_a.d, ds.act_b.d, ds.orb_out.d, stream, stash ? &ds.cache_orb : nullptr);
-
-    assemble_M(ds.orb_out.d, ds.M_batch.d, B, stream);
-    batched_det(handle, B*K, ds.M_batch.d, ds.lu_ptrs.d, ds.lu_piv.d, ds.lu_info.d, ds.dets.d, stream);
-    S_combine(ds.rho_out.d, ds.dets.d, S_dst, B, stream);
-    envelope_logp(ds.x_sh.d, S_dst, ds.params.d, ds.P, logp_dst, B, stream);
+        net_forward(handle, ds.h_net_d, ds.params.d, ds.feat_in.d, B*N, ds.act_a.d, ds.act_b.d, ds.h_out.d, stream, stash ? &ds.cache_h : nullptr);
+        xi_reduce(ds.h_out.d, ds.xi.d, B, stream);
+        net_forward(handle, ds.rho_net_d, ds.params.d, ds.xi.d, B, ds.act_a.d, ds.act_b.d, ds.rho_out.d, stream, stash ? &ds.cache_rho : nullptr);
+        net_forward(handle, ds.orb_net_d, ds.params.d, ds.feat_in.d, B*N, ds.act_a.d, ds.act_b.d, ds.orb_out.d, stream, stash ? &ds.cache_orb : nullptr);
+    }
+    { VMC_PROF("assemble",    stream); assemble_M(ds.orb_out.d, ds.M_batch.d, B, stream); }
+    { VMC_PROF("lu",          stream); batched_det(handle, B*K, ds.M_batch.d, ds.lu_ptrs.d, ds.lu_piv.d, ds.lu_info.d, ds.dets.d, stream); }
+    { VMC_PROF("det_combine", stream); S_combine(ds.rho_out.d, ds.dets.d, S_dst, B, stream); }
+    { VMC_PROF("envelope",    stream); envelope_logp(ds.x_sh.d, S_dst, ds.params.d, ds.P, logp_dst, B, stream); }
 }
 
 void eval_logp_batch_prop(DeviceState& ds, cublasHandle_t handle, int B, const real* x_prop, real* S_prop, real* logp_prop, cudaStream_t stream, bool stash) {
@@ -67,29 +70,36 @@ void eval_logp_batch(DeviceState& ds, cublasHandle_t handle, int B, cudaStream_t
 // Build st table
 void build_st_table_batch(DeviceState& ds, cublasHandle_t handle, int B, cudaStream_t stream) {
     if (B <= 0) return;
-    shift_to_com(ds.x.d, ds.x_sh.d, B, stream);
+    {
+        VMC_PROF("feat_combo", stream);
+        shift_to_com(ds.x.d, ds.x_sh.d, B, stream);
 
-    const std::size_t total = (std::size_t)B * N * 4;
-    const int threads = 256;
-    build_feat_combo_kernel<<<(unsigned)((total + threads - 1)/threads), threads, 0, stream>>>(ds.x_sh.d, ds.feat_in.d, B);
-    cuda_sync_check("build_feat_combo");
-
-    const int rows = B * N * 4;
-    net_forward(handle, ds.h_net_d,   ds.params.d, ds.feat_in.d, rows, ds.act_a.d, ds.act_b.d, ds.h_out.d, stream);
-    net_forward(handle, ds.orb_net_d, ds.params.d, ds.feat_in.d, rows, ds.act_a.d, ds.act_b.d, ds.orb_out.d, stream);
+        const std::size_t total = (std::size_t)B * N * 4;
+        const int threads = 256;
+        build_feat_combo_kernel<<<(unsigned)((total + threads - 1)/threads), threads, 0, stream>>>(ds.x_sh.d, ds.feat_in.d, B);
+        cuda_sync_check("build_feat_combo");
+    }
+    {
+        VMC_PROF("net_fwd", stream);
+        const int rows = B * N * 4;
+        net_forward(handle, ds.h_net_d,   ds.params.d, ds.feat_in.d, rows, ds.act_a.d, ds.act_b.d, ds.h_out.d, stream);
+        net_forward(handle, ds.orb_net_d, ds.params.d, ds.feat_in.d, rows, ds.act_a.d, ds.act_b.d, ds.orb_out.d, stream);
+    }
 }
 
 
 // Batched pull from st table
 void S_from_table_batch(DeviceState& ds, cublasHandle_t handle, int B, const real* s, const real* t, real* S_out, cudaStream_t stream) {
     if (B <= 0) return;
-    const std::size_t total = (std::size_t)B * m_feat;
-    const int threads = 256;
-    xi_reduce_combo_kernel<<<(unsigned)((total + threads - 1)/threads), threads, 0, stream>>>(ds.h_out.d, s, t, ds.xi.d, B);
-    cuda_sync_check("xi_reduce_combo");
-
-    net_forward(handle, ds.rho_net_d, ds.params.d, ds.xi.d, B, ds.act_a.d, ds.act_b.d, ds.rho_out.d, stream);
-    assemble_M_combo(ds.orb_out.d, s, t, ds.M_batch.d, B, stream);
-    batched_det(handle, B*K, ds.M_batch.d, ds.lu_ptrs.d, ds.lu_piv.d, ds.lu_info.d, ds.dets.d, stream);
-    S_combine(ds.rho_out.d, ds.dets.d, S_out, B, stream);
+    {
+        VMC_PROF("xi_combo", stream);
+        const std::size_t total = (std::size_t)B * m_feat;
+        const int threads = 256;
+        xi_reduce_combo_kernel<<<(unsigned)((total + threads - 1)/threads), threads, 0, stream>>>(ds.h_out.d, s, t, ds.xi.d, B);
+        cuda_sync_check("xi_reduce_combo");
+    }
+    { VMC_PROF("net_fwd",     stream); net_forward(handle, ds.rho_net_d, ds.params.d, ds.xi.d, B, ds.act_a.d, ds.act_b.d, ds.rho_out.d, stream); }
+    { VMC_PROF("assemble",    stream); assemble_M_combo(ds.orb_out.d, s, t, ds.M_batch.d, B, stream); }
+    { VMC_PROF("lu",          stream); batched_det(handle, B*K, ds.M_batch.d, ds.lu_ptrs.d, ds.lu_piv.d, ds.lu_info.d, ds.dets.d, stream); }
+    { VMC_PROF("det_combine", stream); S_combine(ds.rho_out.d, ds.dets.d, S_out, B, stream); }
 }

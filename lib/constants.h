@@ -122,6 +122,12 @@ inline constexpr double diss_growth_factor = 1.2;  // Flag only if r_rms also gr
 inline constexpr int eval_iters = 50;              // Frozen-eval sampling iterations (pooled with training's `steps`*`n_thread` per iteration for a tight final E_err)
 inline constexpr int ckpt_every = 100;             // Take a checkpoint every N descent iterations
 
+// Settings for time measurement
+inline constexpr bool prof_enabled     = true;
+inline constexpr int  prof_max_depth   = 4;        // ranges nested deeper than this are not measured
+inline constexpr int  prof_report_every = 100;     // iterations between reports
+inline constexpr const char* prof_report_file = "BENCH.md";
+
 // Transfer Learning Settings
 inline constexpr bool resume = false;             // Load best_checkpoint.txt at startup if present
 inline constexpr const char* transfer_from = "";  // Path to a source checkpoint; empty = disabled

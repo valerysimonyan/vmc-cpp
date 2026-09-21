@@ -12,6 +12,8 @@
 #include <utility>
 #include<atomic>
 
+#include "../constants.h"
+
 #define CUDA_CHECK(call)                                                        \
     do {                                                                        \
         cudaError_t vmc_err_ = (call);                                          \
@@ -24,10 +26,14 @@
         }                                                                       \
     } while (0)
 
+// Option for time tracking
+inline std::atomic<long long>& launch_counter() { static std::atomic<long long> c{0}; return c; }
+
 // Check if kernel fails to launch or there is an error while CPU is waiting for GPUs to finish
 inline void cuda_sync_check(const char* where) {
+    if constexpr (prof_enabled) launch_counter().fetch_add(1, std::memory_order_relaxed);
     cudaError_t launch = cudaGetLastError();
-    if (launch != cudaSuccess) {
+        if (launch != cudaSuccess) {
         std::ostringstream oss;
         oss << "CUDA launch failed in " << where << ": " << cudaGetErrorString(launch);
         throw std::runtime_error(oss.str());

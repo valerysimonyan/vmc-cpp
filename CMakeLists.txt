@@ -51,6 +51,17 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O2 -g")
 
 find_package(Threads REQUIRED)
 
+# Git revision, stamped into the profiler's BENCH.md header so a measurement can
+# always be traced back to the tree that produced it.
+execute_process(COMMAND git rev-parse --short HEAD
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE VMC_GIT_REV OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET RESULT_VARIABLE VMC_GIT_RC)
+if(NOT VMC_GIT_RC EQUAL 0 OR NOT VMC_GIT_REV)
+    set(VMC_GIT_REV "unknown")
+endif()
+
+
 set(VMC_SOURCES
     lib/walkers.cpp lib/physics.cpp lib/slater.cpp lib/util.cpp
     lib/pool.cpp    lib/sr.cpp      lib/cg.cpp     lib/descent.cpp
@@ -63,6 +74,7 @@ if(VMC_REAL32)
                     "the |S| < 1e-290 node-hit criterion is FP64-specific and the "
                     "bit-identity tests do not apply. See lib/precision.h.")
 endif()
+target_compile_definitions(vmc_core PUBLIC VMC_GIT_REV="${VMC_GIT_REV}")
 target_include_directories(vmc_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(vmc_core PUBLIC Threads::Threads)
 
