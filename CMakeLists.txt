@@ -134,7 +134,7 @@ enable_testing()
 
 # DETJET_SELFCHECK turns on det_jet_from_minv's internal cross-check. Tests only:
 # it costs n^2*D extra flops per determinant, which must not ride along into main.
-set(VMC_TESTS test_walkers test_record test_detjet test_psi_jet_swap test_fma_into test_philox)
+set(VMC_TESTS test_walkers test_record test_detjet test_psi_jet_swap test_fma_into test_philox test_deut_ref)
 foreach(t ${VMC_TESTS})
     add_executable(${t} tests/${t}.cpp)
     target_link_libraries(${t} PRIVATE vmc_core)

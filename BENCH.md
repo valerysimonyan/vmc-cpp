@@ -326,18 +326,22 @@ o_pool_max_gb >= 14, or >= 9 with jet_chunk 4096 (<1% cost).
 
 ### Physics
 
-| system | steps | GPU frozen eval | CPU frozen eval (same checkpoint) | z | target |
-|---|---|---|---|---|---|
-| deuteron | 2000 | -2.21402 +/- 0.00157 | -2.21587 +/- 0.00159 | 0.83 | -2.2245 |
-| deuteron | 5000 | -2.23036 +/- 0.00110 | -2.23087 +/- 0.00114 | 0.32 | -2.2245 |
-| triton | 2000 | -8.35675 +/- 0.00425 | -8.36276 +/- 0.00403 | 1.03 | -8.482 |
-| triton | 5000 | -8.3905 +/- 0.0035 | -- | -- | -8.482 |
+| system | steps | GPU frozen eval | CPU frozen eval (same checkpoint) | z | coded-H E_0 | experiment |
+|---|---|---|---|---|---|---|
+| deuteron | 2000 | -2.21402 +/- 0.00157 | -2.21587 +/- 0.00159 | 0.83 | -2.24037 | -2.2246 |
+| deuteron | 5000 | -2.23036 +/- 0.00110 | -2.23087 +/- 0.00114 | 0.32 | -2.24037 | -2.2246 |
+| triton | 2000 | -8.35675 +/- 0.00425 | -8.36276 +/- 0.00403 | 1.03 | not computed | -8.482 |
+| triton | 5000 | -8.3905 +/- 0.0035 | -- | -- | not computed | -8.482 |
 
-- Deuteron at 5000 steps is 5-6 sigma BELOW -2.2245 in both builds (training
-  iterates still falling, variance 0.58). VMC is variational, so either this
-  model-o Hamiltonian binds the deuteron at about -2.231 MeV or the CPU local
-  energy has an error shared by both builds. Open question; not a porting error.
-- Triton at 5000 steps is 92 keV above -8.482 and still converging.
+(Corrected in Phase 6.A. This table originally compared against -2.2245, which is
+the experimental binding energy, not the ground state of the coded Hamiltonian.)
+
+- Deuteron at 5000 steps is 9.9 +/- 1.1 keV ABOVE the coded Hamiltonian's ground
+  state -2.2403705 MeV (Phase 6.A oracle), in both builds. The variational
+  principle holds; the deuteron is not yet converged at the keV level.
+- Triton at 5000 steps is 92 keV above the experimental -8.482. The coded
+  Hamiltonian's triton energy is unknown (no 3-body oracle), so that gap cannot
+  be split between unconverged training and the model missing experiment.
 - A full-length Li6 production run was not done (300-iteration window only).
 
 ### Status: what stays on the host per iteration, and why
@@ -719,8 +723,9 @@ performance change.
 
 ### Carried forward, unchanged by this phase
 
-- Deuteron at 5000 steps sits 5-6 sigma below -2.2245 in both builds. Open.
-- Triton is 92 keV above -8.482 and still converging.
+- Deuteron at 5000 steps sits ~10 keV above the coded-H ground state -2.24037
+  (resolved in Phase 6.A: the old -2.2245 "target" was the experimental value).
+- Triton is 92 keV above the experimental -8.482; no coded-H oracle yet.
 - A full-length Li6 production run has still not been done.
 
 ## Phase 6.1 -- elementwise fusion and CUDA graphs for the sweep
@@ -785,3 +790,82 @@ Both came from applying 6.0 edits where the replaced lines stayed in place:
 2. `assemble_O_batch` called `cuda_sync_check("o_finalize")` twice, double-counting one launch.
 
 Both are fixed in the 6.1 code. The "before" column above was measured with them fixed, so the comparison isolates 6.1.
+
+## Phase 6.2 -- custom batched LU / det / inverse
+
+`lib/gpu/lu_batched_small.cu`: the host `lu_det_inv` transcribed operation for operation (strict `>` pivot search so ties go to the lowest row, division by the pivot, the 1e-300 pivot guard zeroing det and Minv, the column-by-column inverse). `batched_lu_det_inv` is now the single entry point for the double evaluation, the (s,t) table and the jet pass's Minv, which comes from the same factorisation as the determinants (the separate `getri` step is gone). `use_custom_lu` (default **true**, set by the measurement below) selects it; cuBLAS getrf/getri stays compiled as the oracle and as the fallback for N > 16.
+
+### Correctness (`test_lu`)
+
+| check | result |
+|---|---|
+| vs host `lu_det_inv` on identical input, 100,002 matrices, n = 2, 3, 6, 8, 12, 16 (half random; half duplicate rows, duplicate columns, zero column, 1e-301 column, pivot ties) | **det and Minv bit-identical for every matrix**; singular flags agree with the host's verdict everywhere; input never modified |
+| production path (`eval_jet_prepare`, B = 1024): 31,744 real Slater matrices vs `lu_det_inv` | **bit-identical** det and Minv |
+| vs cuBLAS getrf/getri on the same batches (generic matrices) | values agree to <= 0.43 x kappa * n * eps; kappa <= 100: max rel det 5.3e-15; raw max rel det up to 9.4e-12 on kappa ~ 1e6 matrices; bitwise agreement only occasional |
+| negative control: pivot tie rule `>=` (last maximum wins) | fails at every n (bit identity broken on the tie cases) |
+| pipeline twice from identical state (3 sweeps + local_E) | 0 differing values |
+| suite | 14/14 with `use_custom_lu = true`, 14/14 with `false`, CPU 6/6 |
+
+Why cuBLAS is compared by value and against kappa, not bits: it reads the row-major storage as column-major and so factorises the **transpose**, a different pivot sequence from the host's. Two backward-stable LUs with different pivot orders disagree on det by up to ~ kappa n eps. Since the custom kernel is bit-identical to the host, it -- not cuBLAS -- is the production and determinism reference from 6.2 on.
+
+### Design: the prompt's warp-per-matrix kernel lost; thread-per-matrix won
+
+| kernel (Li6, 180k 6x6 matrices per call) | (s,t)-table LU per call |
+|---|---:|
+| cuBLAS getrf + det_from_lu | 0.55 ms |
+| warp per matrix, shared memory (as prompted) | 2.10 ms (3.8x slower; 11x slower at n = 2) |
+| **thread per matrix, registers** | **0.21 ms (2.7x faster)** |
+
+The prompt's premise that cuBLAS is slow at N <= 6 did not hold (~3 ns per 6x6 matrix). A 6x6 elimination has too little parallelism for 32 lanes; one thread running the host loop with the matrix unrolled in registers (runtime-indexed swaps rewritten as predicated moves, so nothing spills) is the fast layout. The warp kernel remains for 9 <= n <= 16, where registers run out; it is tested but unused in production.
+
+### Timing: `use_custom_lu` off (cuBLAS) vs on
+
+Same probe configs as 6.0/6.1 (graphs on); two interleaved repetitions each, SD within a run 1.5 ms deuteron / 3.3 ms Li6.
+
+| | cuBLAS | custom | change |
+|---|---:|---:|---:|
+| **Li6** ms/iter | 1245.40 | **1147.93** | **-7.8%** |
+| Li6 sweep time (therm + record) | 928.2 | 832.8 | -10.3% |
+| Li6 (s,t)-table LU, 6 calls/iter | 3.30 | 1.24 | 2.7x |
+| Li6 det + Minv for the jet pass, 2 calls/iter | 2.27 | 1.31 | 1.7x |
+| **deuteron** ms/iter | 123.56 | 123.46 | wash (2x2 matrices) |
+
+Most of the Li6 saving sits inside the coordinate-draw graphs (54 LU calls per sweep), which the profiler times as one range. 6.0 measured all determinant work at 14.5% of the Li6 iteration and placed 6.2 just under its 15% trigger; the realised gain, 7.8% end to end, is about half of that share.
+
+### Physics
+
+- Bit-reproducible with the flag on: rep 1 vs rep 2, 0 differing CSV fields (deuteron 200 iterations, Li6 50).
+- Flag on vs off follow the same trajectory in the printed CSV until last-bit determinant differences grow chaotically (visible from iteration 171 deuteron, 43 Li6). Mean E over the second half: deuteron -1.9552 (custom) vs -1.9553 (cuBLAS); Li6 -22.532 vs -22.521 (se ~ 0.06).
+
+## Phase 6.A -- the deuteron reference, audited
+
+The frozen-eval deuteron (-2.2304 +/- 0.0011 GPU, -2.2309 +/- 0.0011 CPU) sat 5-6 sigma *below* the table's target -2.2245. VMC is variational, so either that target was not the ground state of the coded Hamiltonian, or both builds shared an estimator bias. `tests/test_deut_ref.cpp` settles it: the ground state of the Hamiltonian as coded, with the constants `#include`d from `constants.h`, by two independent methods.
+
+- Relative motion with hbar^2/(2 mu) = 2 * hbar2_2m = 41.471036 MeV fm^2 (local_E's single-nucleon Laplacian acting on a translation-invariant psi).
+- 3S1 T=0 potential from local_E's projection: R_s = +1, R_t = -1, R_st = -1 zero the C01 bracket and make the C10 bracket 4, so V(r) = hbarc C10 exp(-r^2/R10^2) / (pi^1.5 R10^3).
+
+**A. Numerov** (Giannozzi matching at 3 fm, O(h^4)), E in MeV:
+
+| box R | h = 0.01 | h = 0.005 | h = 0.0025 | Richardson |
+|---:|---:|---:|---:|---:|
+| 20 fm, hard wall | -2.2389922 | -2.2389924 | -2.2389924 | -2.2389924 |
+| 30 fm, hard wall | -2.2403572 | -2.2403573 | -2.2403573 | -2.2403573 |
+| 60 fm, hard wall | -2.2403703 | -2.2403705 | -2.2403705 | -2.2403705 |
+| 120 fm, hard wall | -2.2403703 | -2.2403705 | -2.2403705 | -2.2403705 |
+| 20-120 fm, asymptotic exp(-kappa r) | -2.2403703 | -2.2403705 | -2.2403705 | -2.2403705 |
+
+**B. Gaussian basis** (20 to 50 even-tempered Gaussians, analytic matrix elements, generalised eigenproblem): -2.2403705 MeV at every size.
+
+**E_ref = -2.2403705 MeV** for the coded Hamiltonian; the two methods agree to 1e-9 MeV. The grid is converged at h = 0.01 fm; the box costs 1.4 keV at 20 fm, 13 eV at 30 fm and nothing measurable beyond -- neither was the cause. The 1S0 T=1 channel is unbound (Gaussian lowest eigenvalue -> 0+ as the basis widens).
+
+### Verdict
+
+**The old target was not an oracle.** -2.2245 was never computed from our constants -- no solver for it existed in the repository -- and it is the experimental deuteron binding energy (2.2246 MeV). The paper fits C10 and R10 to three triplet observables (scattering length, effective range, binding energy) with two parameters, so the coded model need not reproduce the experimental binding, and it does not: it binds 15.9 keV more. Rounding of the printed constants cannot account for that: the last digit of C10 moves E_d by +/-0.9 keV and of R10 by +/-5.7 keV; reproducing -2.2245 would take C10 = -7.0314 fm^2 against the coded -7.040.
+
+**The VMC is not converged at the keV level.** Against the correct reference the frozen eval is **9.9 +/- 1.1 keV above** the ground state (0.45%), as the variational principle requires, and consistent with training iterates that were still falling at 5000 steps. There is no evidence of a shared estimator bias, so the suspects listed for that case (invalid-sample exclusion, error-bar underestimation, a mass-factor mismatch) were not pursued. CPU and GPU agree with each other throughout.
+
+For context only, and not our criterion: the paper does not state model "o"'s own deuteron energy in its text; the experimental value is 2.2246 MeV.
+
+### Triton
+
+The triton "target" -8.482 is the **experimental** 3H binding energy (8.4818 MeV), to which the paper fits c_E for its R3; `constants.h` uses a refit c_E = 1.2945. It did not come from a box or grid calculation, so the Numerov box/grid question does not apply, and it is not the ground state of the coded Hamiltonian. The error bar it deserves as a reference is unknown until the coded Hamiltonian's triton is computed -- given a 16 keV model-vs-experiment offset already in the deuteron, tens to ~100 keV would be unsurprising. What is certain is only E_0(coded) <= -8.3905 +/- 0.0035 (the VMC). A real oracle needs a three-body solver (e.g. correlated Gaussians with the stochastic variational method); not done.
