@@ -60,4 +60,4 @@ void record_batch(WalkerBatch& wb, const Ansatz& a, double step, int records, Th
 
 double batch_error(const BatchStats& bs);
 
-void masked_O_exp(const std::vector<double>& O_pool, const std::vector<uint8_t>& valid_pool, std::size_t n_samples, std::size_t P, ThreadPool* pool, std::vector<double>& O_exp);
+void masked_O_exp(const std::vector<double>& O_pool, const std::vector<uint8_t>& valid_pool, std::size_t n_samples, std::size_t P, ThreadPool* pool, std::vector<double>& O_exp); 

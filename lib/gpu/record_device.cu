@@ -105,10 +105,6 @@ void download_iteration(DeviceState& ds, int B, int records, PinnedArray& stagin
 
     // Stage on device, then ONE copy across the bus.
     std::size_t off = 0;
-    for (const Seg& s : segs) {
-        CUDA_CHECK(cudaMemcpy(ds.pack_d.d + off, s.src, s.bytes, cudaMemcpyDeviceToDevice));
-        off += s.bytes;
-    }
     staging.ensure(total);
     unsigned char* h = staging.as<unsigned char>();
     {

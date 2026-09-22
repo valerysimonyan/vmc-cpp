@@ -56,7 +56,7 @@ void GpuProf::push(const char* name, cudaStream_t stream) {
     o.launch0 = launch_counter().load(std::memory_order_relaxed);
 
     // Depth cap: a range nested deeper than this is opened and closed but not measured, so instrumentation inside a leaf helper costs nothing when that helper is called from deep inside the sweep.
-    if ((int)stack_.size() < prof_max_depth) {
+    if ((int)stack_.size() < prof_max_depth && !graph_capturing().load(std::memory_order_relaxed)) {
         o.row = row_index(o.path, true);
         o.ev  = take_event();
         CUDA_CHECK(cudaEventRecord(o.ev, stream));
@@ -74,7 +74,7 @@ void GpuProf::push_host(const char* name) {
     o.stream  = nullptr;
     o.t0      = clock::now();
     o.launch0 = launch_counter().load(std::memory_order_relaxed);
-    if ((int)stack_.size() < prof_max_depth) {
+    if ((int)stack_.size() < prof_max_depth && !graph_capturing().load(std::memory_order_relaxed)) {
         o.row = row_index(o.path, false);
 #ifdef VMC_NVTX
         nvtxRangePushA(o.path.c_str());

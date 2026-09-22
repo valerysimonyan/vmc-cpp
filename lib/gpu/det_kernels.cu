@@ -77,20 +77,23 @@ __global__ void det_from_lu_kernel(const real* __restrict__ M_batch, const int* 
     dets[m] = det;
 }
 
+// Get determinant from LU decomposition
+void dets_from_lu(const real* M_batch, const int* lu_piv, const int* lu_info, real* dets, int n_mats, cudaStream_t stream) {
+    if (n_mats <= 0) return;
+    const int threads = 256;
+    det_from_lu_kernel<<<(n_mats + threads - 1)/threads, threads, 0, stream>>>(M_batch, lu_piv, lu_info, dets, n_mats);
+    cuda_sync_check("det_from_lu");
+}
+
 void batched_det(cublasHandle_t handle, int n_mats, real* M_batch, double** lu_ptrs, int* lu_piv, int* lu_info, real* dets, cudaStream_t stream) {
     if (n_mats <= 0) return;
     static_assert(std::is_same<real, double>::value, "batched_det uses cublasDgetrfBatched; the FP32 path needs cublasSgetrfBatched and its own oracle tolerances");
 
     // lu_ptrs stores pointers to all NxN matrices containing L and U, P is stored in lu_piv, and lu_info contains information on singulatirties
-    cublasSetStream(handle, stream);
-    cublasStatus_t st = cublasDgetrfBatched(handle, N, lu_ptrs, N, lu_piv, lu_info, n_mats);
+    lu_factor(handle, n_mats, lu_ptrs, lu_piv, lu_info, stream);
 
-    if (st != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("batched_det: cublasDgetrfBatched failed, status " + std::to_string((int)st));
-    
     // Evaluate determinant, return 0 if singular matrix
-    const int threads = 256;
-    det_from_lu_kernel<<<(n_mats + threads - 1)/threads, threads, 0, stream>>>(M_batch, lu_piv, lu_info, dets, n_mats);
-    cuda_sync_check("det_from_lu");  
+    dets_from_lu(M_batch, lu_piv, lu_info, dets, n_mats, stream);
 }
 
 // Evlauate ansatz
@@ -110,9 +113,10 @@ void S_combine(const real* rho_out, const real* dets, real* S, int B, cudaStream
 }
 
 // Also GPU_ize envelope evaluation
-__global__ void envelope_logp_kernel(const real* __restrict__ x_sh, const real* __restrict__ S, real alpha, real* __restrict__ logp, int B) {
+__global__ void envelope_logp_kernel(const real* __restrict__ x_sh, const real* __restrict__ S, const real* __restrict__ alpha_d, real* __restrict__ logp, int B) {
     int w = blockIdx.x * blockDim.x + threadIdx.x;
     if (w >= B) return;
+    const real alpha = *alpha_d;
 
     real r2 = (real)0;
     const real* xw = x_sh + (std::size_t)w * D;
@@ -129,12 +133,43 @@ __global__ void envelope_logp_kernel(const real* __restrict__ x_sh, const real* 
 
 void envelope_logp(const real* x_sh, const real* S, const real* params, std::size_t P, real* logp, int B, cudaStream_t stream) {
     if (B <= 0) return;
-    real alpha_h;
-    CUDA_CHECK(cudaMemcpyAsync(&alpha_h, params + (P - 1), sizeof(real), cudaMemcpyDeviceToHost, stream));
-    xfer_note_dn(sizeof(real));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-
     const int threads = 256;
-    envelope_logp_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(x_sh, S, alpha_h, logp, B);
+    envelope_logp_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(x_sh, S, params + (P - 1), logp, B);
     cuda_sync_check("envelope_logp");
+}
+
+__global__ void combine_envelope_kernel(const real* __restrict__ rho, const real* __restrict__ dets, real* __restrict__ S, const real* __restrict__ x_sh, const real* __restrict__ alpha_d, real* __restrict__ logp, int B) {
+    int w = blockIdx.x * blockDim.x + threadIdx.x;
+    if (w >= B) return;
+
+    real acc = (real)0;
+    for (int k = 0; k < K; k++) acc += rho[(std::size_t)w*K + k] * dets[(std::size_t)w*K + k];
+    S[w] = acc;
+
+    const real alpha = *alpha_d;
+    real r2 = (real)0;
+    const real* xw = x_sh + (std::size_t)w * D;
+    for (int i = 0; i < D; i++) r2 += xw[i] * xw[i];
+    const real r_env = sqrt(r2 + (real)(eps_env * eps_env));
+
+    const real Sv = acc;
+    if (!(Sv != (real)0) || !isfinite(Sv)) {
+        logp[w] = -INFINITY;
+        return;
+    }
+    logp[w] = -((real)beta_min + exp(alpha)) * r_env + log(fabs(Sv));
+}
+
+void combine_envelope(const real* rho_out, const real* dets, real* S, const real* x_sh, const real* params, std::size_t P, real* logp, int B, cudaStream_t stream) {
+    if (B <= 0) return;
+    const int threads = 256;
+    combine_envelope_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(rho_out, dets, S, x_sh, params + (P - 1), logp, B);
+    cuda_sync_check("combine_envelope");
+}
+
+void lu_factor(cublasHandle_t handle, int n_mats, double** lu_ptrs, int* lu_piv, int* lu_info, cudaStream_t stream) {
+    if (n_mats <= 0) return;
+    blas_bind(handle, stream);
+    cublasStatus_t st = cublasDgetrfBatched(handle, N, lu_ptrs, N, lu_piv, lu_info, n_mats);
+    if (st != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("lu_factor: cublasDgetrfBatched failed, status " + std::to_string((int)st));
 }

@@ -722,3 +722,66 @@ performance change.
 - Deuteron at 5000 steps sits 5-6 sigma below -2.2245 in both builds. Open.
 - Triton is 92 keV above -8.482 and still converging.
 - A full-length Li6 production run has still not been done.
+
+## Phase 6.1 -- elementwise fusion and CUDA graphs for the sweep
+
+### What was built
+
+**Fusions** (each bitwise identical to the kernels it replaces, tested pre/post):
+
+| fusion | status |
+|---|---|
+| `shift_to_com` + `build_feat` -> `shift_build_feat` | done |
+| `shift_to_com` + `build_feat_combo` -> `shift_feat_combo` ((s,t) table) | done |
+| `S_combine` + `envelope_logp` -> `combine_envelope` | done: Li6 3.50 -> 1.85 ms/iter, deuteron 0.96 -> 0.42 |
+| `det_from_lu` into the same tail | **measured and rejected**: its parallelism is one thread per matrix (B*K = 180k on Li6); thread-per-walker fused took 110 us/call and warp-per-walker 140 us/call against 59 us separate |
+| propose + x_prop row copy | already one kernel since Phase 3.3 |
+| accept + acceptance counter | already one kernel since Phase 3.3 |
+| jet features + analytic seeds | already one kernel (`build_jet_feat_kernel` computes the COM inline) |
+
+Still split, by necessity: `getrf` (cuBLAS), the `assemble_M` scatter into the per-matrix layout that getrf's pointer array needs, and bias+activation after each GEMM (a cuBLAS GEMM has no epilogue hook).
+
+**Graphs.** One captured graph per coordinate draw (20 kernel nodes: propose, the evaluation chain, accept), one per spin round and one per isospin round (11 nodes each), each replayed `draws` / `spin_draws` / `tau_draws` times per sweep. They are re-captured and updated in place (`cudaGraphExecUpdate`) only when B or the proposal step changes, which is at most once per iteration. The (s,t) table build runs once per sweep and stays eager. `use_cuda_graphs` in constants.h selects the path; the eager path is kept as the debug path and must reproduce the graphs bit for bit.
+
+The prompt's premise that a draw contains no syncs was **false**: `envelope_logp` downloaded alpha and called `cudaStreamSynchronize` on every evaluation, so capture fails as the code stood. It now reads alpha on the device (bitwise neutral; the same A/B as 6.0), which also deletes 57 blocking 8-byte downloads per deuteron iteration.
+
+Capture requirements, each checked: cuBLAS gets its stream and a 32 MiB user workspace before capture and is never re-bound inside it (`blas_bind` only calls `cublasSetStream` on a real change); capture uses `cudaStreamCaptureModeGlobal` on a dedicated blocking stream, so every op on legacy stream 0 is implicitly ordered around the graph launches; and the profiler and the launch counter pause while capturing. Replay is correct because every kernel reads and advances its walker's Philox counter in device memory (the Phase 2 counter-based RNG): identical graphs draw fresh random numbers.
+
+### Correctness
+
+- `test_graphs`, 50 sweeps graphs-on vs graphs-off, B = 512, with a step change at sweep 25 (re-capture + in-place update) and B = 300 from sweep 45 (re-instantiation): **0 differing values** in x, s, t, logp, rng_ctr and all three acceptance counters. Negative control -- the graph not re-captured when the step changes: **13,654 values differ**.
+- Every fusion: 0 differing values against the unfused kernels, including forced-singular walkers (S = 0, logp = -inf).
+- Suite: 13/13 with `use_cuda_graphs = true`, 13/13 with `false`, CPU 6/6.
+- Physics: deuteron 200 iterations and Li6 50 iterations, before-6.1 vs fusions-only vs fusions+graphs, two repetitions each: **bit-identical CSV trajectories**. The only changed field is `bytes_dn` (-456 bytes/iteration on the deuteron, the deleted alpha downloads).
+
+### Timing: before / fusions only / fusions + graphs
+
+Same configs as the 6.0 probes (resume, therm_steps_init = 100, batch_grow_factor = 1); deuteron 200 iterations, Li6 50; iteration 0 discarded. ms/iter is the mean over two interleaved repetitions (SD within a run 1.3-1.7 ms deuteron, 3.3-4.7 ms Li6).
+
+| | before | fusions only | fusions + graphs | graphs gain |
+|---|---:|---:|---:|---:|
+| **deuteron** ms/iter | 129.83 | 129.12 | **124.87** | **-3.8%** |
+| sweep time (rep 2) | 82.56 | 81.40 | 77.12 | -6.6% |
+| launches/iter, whole iteration | 1370 | 1245 | 345 | -75% |
+| launches/iter, sweeps only | 1215 | 1098 | 198 | -84% |
+| **Li6** ms/iter | 1266.11 | 1262.16 | **1251.45** | **-1.2%** |
+| sweep time (rep 2) | 948.66 | 943.98 | 933.91 | -1.6% |
+| launches/iter, whole iteration | 3574 | 3233 | 533 | -85% |
+
+With graphs on, "launches" counts host-issued launches, one per graph replay.
+
+Honest reading:
+
+- **Graphs earn their keep where the prompt predicted, and only there.** The deuteron's sweeps lose 5.4 ms/iter; Li6 gains 1.2%, inside what its GEMMs dominate.
+- **The 6.0 overhead metric underestimated launch cost.** 6.0 put the reclaimable sweep overhead at 1.93% of deuteron sweep time; graphs recovered 6.6%. The 6.0 metric could only see gaps *between* profiled ranges; gaps between the kernels *inside* a leaf range (one net_fwd call is 8 counted launches plus 6 cuBLAS GEMMs) were counted as that range's GPU time. The graph run is the direct measurement.
+- **The fusions are worth ~0.3-0.5%**, mostly from `combine_envelope` and the deleted alpha syncs. They matter more as a precondition for graphs than on their own.
+- The iteration is still ~70% FP64 network forwards on both systems. 6.1 moves the deuteron from 129.8 to 124.9 ms; 6.3 is what can move either system substantially.
+
+### Two bugs found in the committed 6.0 tree
+
+Both came from applying 6.0 edits where the replaced lines stayed in place:
+
+1. `download_iteration` ran the old staging loop AND the new one, copying every segment twice; the second pass starts at `off = total` and writes past the end of `pack_d`. Production survives by accident (its pack buffer is sized for `records_per_iter_max`, twice the records used before `grow_at_iter`) but would crash at iteration 7000; every 6.1 probe (batch_grow_factor = 1) crashed on the first iteration.
+2. `assemble_O_batch` called `cuda_sync_check("o_finalize")` twice, double-counting one launch.
+
+Both are fixed in the 6.1 code. The "before" column above was measured with them fixed, so the comparison isolates 6.1.

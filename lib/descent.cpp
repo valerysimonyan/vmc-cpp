@@ -556,7 +556,7 @@ DescentResult evaluate_frozen(Ansatz& a) {
     bs_all.n_valid = bs_all.n_invalid = 0;
 
     double acc_sum = 0.0, spin_acc_sum = 0.0, tau_acc_sum = 0.0;
-    
+
 #ifdef VMC_CUDA
     prof_reset();   // the frozen eval is profiled in its own right, not as descent
 #endif
@@ -592,7 +592,16 @@ DescentResult evaluate_frozen(Ansatz& a) {
             bs_all.Ew_sum[w] += bs.Ew_sum[w];
             bs_all.nw[w] += bs.nw[w];
         }
+#ifdef VMC_CUDA
+        // Closes the iteration for the profiler: without it the event pairs
+        // recorded by the sweeps would never be resolved or recycled.
+        prof_iteration_end(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_it0).count());
+        if (i == 0) prof_reset();
+#endif
     }
+#ifdef VMC_CUDA
+    prof_report(n_walkers, records_per_iter_max, a.n_params(), "frozen_eval");
+#endif
 
     r.acceptance = acc_sum / eval_iters;
     r.spin_acceptance = spin_acc_sum / eval_iters;

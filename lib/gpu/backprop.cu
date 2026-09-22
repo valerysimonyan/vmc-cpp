@@ -234,6 +234,5 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
         { VMC_PROF("o_finalize", stream);
           o_finalize_kernel<<<(unsigned)Bc, 128, 0, stream>>>(O_first, ds.valid_loc.d, ds.S.d, ds.x_sh.d, alpha, P, Bc, w_off);
           cuda_sync_check("o_finalize"); }
-        cuda_sync_check("o_finalize");
     }
 }

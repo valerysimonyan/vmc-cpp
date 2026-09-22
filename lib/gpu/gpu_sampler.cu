@@ -4,6 +4,7 @@
 #include "exchange_kernels.h"
 #include "sampler_kernels.h"
 #include "gpu_sampler.h"
+#include "sweep_graph.h"
 
 #include <algorithm>
 #include <chrono>
@@ -17,6 +18,12 @@ void upload_and_reset(DeviceState& ds, const WalkerBatch& wb, PinnedArray& stagi
 }
 
 void sweep_device(DeviceState& ds, cublasHandle_t handle, int B, double step, cudaStream_t stream) {
+    // Do with graph if so desired
+    if (ds.graphs.enabled && stream == 0) {
+        sweep_device_graph(ds, handle, B, step);
+        return;
+    }
+
     // Propose new coordinates
     for (int j = 0; j < draws; j++) {
         { VMC_PROF("propose",     stream); propose_coord(ds, B, step, stream); }

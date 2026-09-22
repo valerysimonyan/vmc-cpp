@@ -12,7 +12,26 @@
 #include <cstdint>
 #include <vector>
 
+// Graph object, instead of launching on device seperately every time tell it at once to launch
+struct SweepGraphs {
+    bool            enabled = use_cuda_graphs;   
+    cudaStream_t    stream  = nullptr;           
+    DeviceArray<unsigned char> blas_ws;          
+    cudaGraphExec_t coord = nullptr, spin = nullptr, tau = nullptr;
+    int             coord_B = -1, disc_B = -1;
+    double          coord_step = 0.0;
+    std::size_t     coord_nodes = 0, spin_nodes = 0, tau_nodes = 0;
+    long long       n_captures = 0, n_updates = 0;
+
+    SweepGraphs() = default;
+    SweepGraphs(const SweepGraphs&) = delete;
+    SweepGraphs& operator=(const SweepGraphs&) = delete;
+    ~SweepGraphs();                              
+};
+
 struct DeviceState {
+    SweepGraphs graphs;
+
     DeviceArray<real> x;         // B*N    
     DeviceArray<real> s;         // B*N
     DeviceArray<real> t;         // B*N

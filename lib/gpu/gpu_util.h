@@ -30,15 +30,18 @@
 inline std::atomic<long long>& launch_counter() { static std::atomic<long long> c{0}; return c; }
 
 // Check if kernel fails to launch or there is an error while CPU is waiting for GPUs to finish
+inline std::atomic<bool>& graph_capturing() { static std::atomic<bool> f{false}; return f; }
 inline void cuda_sync_check(const char* where) {
-    if constexpr (prof_enabled) launch_counter().fetch_add(1, std::memory_order_relaxed);
+    const bool capturing = graph_capturing().load(std::memory_order_relaxed);
+    if constexpr (prof_enabled) if (!capturing) launch_counter().fetch_add(1, std::memory_order_relaxed);
     cudaError_t launch = cudaGetLastError();
-        if (launch != cudaSuccess) {
+    if (launch != cudaSuccess) {
         std::ostringstream oss;
         oss << "CUDA launch failed in " << where << ": " << cudaGetErrorString(launch);
         throw std::runtime_error(oss.str());
     }
 #ifdef VMC_CUDA_SYNCCHECK
+    if (capturing) return;
     cudaError_t exec = cudaDeviceSynchronize();
     if (exec != cudaSuccess) {
         std::ostringstream oss;

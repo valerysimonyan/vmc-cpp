@@ -44,6 +44,33 @@ void build_feat(const real* x_sh, const real* s, const real* t, real* feat_in, i
     cuda_sync_check("build_feat");
 }
 
+// Combine shift to COM coordinates and building the input layer for single particle networks for memroy benefits
+__global__ void shift_build_feat_kernel(const real* __restrict__ x, const real* __restrict__ s, const real* __restrict__ t, real* __restrict__ x_sh, real* __restrict__ feat_in, int B) {
+    int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= B*N) return;
+    const int w = r / N, p = r % N;
+    const real* xw = x + (std::size_t)w * D;
+    real* ow = x_sh + (std::size_t)w * D;
+    real* f = feat_in + (std::size_t)r * (dim + 2);
+    for (int d = 0; d < dim; d++) {
+        real R = (real)0;
+        for (int i = 0; i < N; i++) R += xw[i*dim + d];
+        R /= (real)N;
+        const real v = xw[p*dim + d] - R;
+        ow[p*dim + d] = v;
+        f[d] = v;
+    }
+    f[dim] = s[(std::size_t)w*N + p];
+    f[dim + 1] = t[(std::size_t)w*N + p];
+}
+
+void shift_build_feat(const real* x, const real* s, const real* t, real* x_sh, real* feat_in, int B, cudaStream_t stream) {
+    if (B <= 0) return;
+    const int total = B*N, threads = 256;
+    shift_build_feat_kernel<<<(total + threads - 1)/threads, threads, 0, stream>>>(x, s, t, x_sh, feat_in, B);
+    cuda_sync_check("shift_build_feat");
+}
+
 // Launch activation function, if tanh return tanh, else do GELU
 __device__ __forceinline__ real dev_apply_activation(Activation act, real x) {
     if (act == Activation::Tanh) return tanh(x);
