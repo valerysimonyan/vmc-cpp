@@ -42,11 +42,42 @@ std::size_t NetCache::bytes() const {
     return b;
 }
 
+// Float forward pass
+static void net_forward_f32(cublasHandle_t handle, const DeviceNet& dn, const real* params, const real* in, int rows, real* a, real* b, real* out, cudaStream_t stream, NetCache* cache) {
+    if (!dn.params_f || params != dn.params_src)
+        throw std::runtime_error("net_forward (fp32_forward): the float parameter mirror is missing or mirrors a different "
+                                 "parameter array -- run DeviceState::upload_params for these parameters");
+    const int in0 = dn.layers.front().in_w, outL = dn.layers.back().out_w;
+    if ((std::size_t)rows * in0 > dn.in_f_cap || (std::size_t)rows * outL > dn.out_f_cap)
+        throw std::runtime_error("net_forward (fp32_forward): float scratch smaller than this call");
+
+    cast_to_float(in, dn.in_f, (std::size_t)rows * in0, stream);
+    const float* cur = dn.in_f;
+    float* fa = reinterpret_cast<float*>(a);        // the FP64 ping-pong holds twice the floats
+    float* fb = reinterpret_cast<float*>(b);
+    float* nxt = fa;
+    for (std::size_t l = 0; l < dn.layers.size(); l++) {
+        const DeviceLayer& L = dn.layers[l];
+        const bool last = (l + 1 == dn.layers.size());
+        if (cache) cast_to_double(cur, cache->a_in[l].d, (std::size_t)rows * L.in_w, stream);
+        float* dst = last ? dn.out_f : nxt;
+        gemm_rm<float>(handle, rows, L.in_w, L.out_w, cur, dn.params_f + L.w_off, dst, stream);
+        if (last) {
+            bias_out_f(dst, dn.params_f + L.b_off, out, cache ? cache->z[l].d : nullptr, rows, L.out_w, stream);
+        } else {
+            bias_act_f(dst, cache ? cache->z[l].d : nullptr, dn.params_f + L.b_off, rows, L.out_w, dn.act, stream);
+            cur = dst;
+            nxt = (nxt == fa) ? fb : fa;
+        }
+    }
+}
+
 // Forward pass
 void net_forward(cublasHandle_t handle, const DeviceNet& dn, const real* params, const real* in, int rows, real* a, real* b, real* out, cudaStream_t stream, NetCache* cache) {
     if (rows <= 0 || dn.layers.empty()) return;
     if (cache && ((std::size_t)rows > cache->rows_cap || cache->z.size() != dn.layers.size()))
         throw std::runtime_error("net_forward: activation stash is smaller than this call (grow_phase5 not run, or rows over capacity)");
+    if constexpr (fp32_forward) { net_forward_f32(handle, dn, params, in, rows, a, b, out, stream, cache); return; }
     const real* cur = in;
     real* nxt = a;
 

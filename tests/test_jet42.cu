@@ -4,6 +4,7 @@
 // the determinant jet, the activation f'', and the envelope composition all at
 // once. If g passes and l fails, suspect those three in that order.
 #include "../lib/gpu/arena.h"
+#include "../tests/test_tolerances.h"
 #include "../lib/gpu/jet_kernels.h"
 #include "../lib/gpu/detjet_kernels.h"
 #include "../lib/gpu/compose_kernels.h"
@@ -106,9 +107,9 @@ static void test_det_jet(const Ansatz& a, cublasHandle_t h) {
     // host's lu_det, which Phase 3.2 measured at max 3.9e-12 and bounded at 1e-10.
     // Asserting 1e-12 here would just be re-testing Phase 3's LU, and failing.
     CHECK(n_vbit == 0, "det jet value block is not ds.dets verbatim");
-    CHECK(wv <= 1e-10, "det jet value disagrees with CPU det_jet_from_minv beyond the known LU gap");
-    CHECK(wg <= 1e-10, "det jet gradient disagrees with CPU det_jet_from_minv");
-    CHECK(wl <= 1e-10, "det jet laplacian disagrees with CPU det_jet_from_minv");
+    CHECK(wv <= tol::ff(1e-10, 5e-2), "det jet value disagrees with CPU det_jet_from_minv beyond the known LU gap");
+    CHECK(wg <= tol::ff(1e-10, 5e-2), "det jet gradient disagrees with CPU det_jet_from_minv");
+    CHECK(wl <= tol::ff(1e-10, 5e-2), "det jet laplacian disagrees with CPU det_jet_from_minv");
 }
 
 // --- E2: full psi jet oracle ------------------------------------------------
@@ -137,9 +138,9 @@ static void test_psi_jet(const Ansatz& a, cublasHandle_t h) {
             wg = std::max(wg, rel((double)Jp[(std::size_t)(1+A)*ps + w], pj.g[A]));
     }
     std::printf("  psi jet vs CPU jpsi: v %.2e  g %.2e  l %.2e\n", wv, wg, wl);
-    CHECK(wv <= 1e-10, "psi jet value disagrees with CPU jpsi");
-    CHECK(wg <= 1e-10, "psi jet gradient disagrees with CPU jpsi");
-    CHECK(wl <= 1e-10, "psi jet laplacian disagrees with CPU jpsi -- suspect term2, then f''");
+    CHECK(wv <= tol::ff(1e-10, 1e-2), "psi jet value disagrees with CPU jpsi");
+    CHECK(wg <= tol::ff(1e-10, 1e-2), "psi jet gradient disagrees with CPU jpsi");
+    CHECK(wl <= tol::ff(1e-10, 1e-2), "psi jet laplacian disagrees with CPU jpsi -- suspect term2, then f''");
 }
 
 // --- E3: E_kin, L^2, V_3N ---------------------------------------------------
@@ -182,9 +183,9 @@ static void test_energy_terms(const Ansatz& a, cublasHandle_t h) {
     // one. L^2 is NOT -- it is dimensionless and runs to ~4e4 here, so the same
     // absolute bound would be a 1e-13 relative demand on the largest entries and
     // would fail on rounding alone. It gets a relative bound instead.
-    CHECK(wk  <= 1e-9,  "E_kin disagrees with -hbar2_2m*pj.l/pj.v");
+    CHECK(wk  <= tol::ff(1e-9, 2.0),  "E_kin disagrees with -hbar2_2m*pj.l/pj.v");   // MeV, per sample
     CHECK(wv3 <= 1e-9,  "V_3N disagrees with the CPU triples loop");
-    CHECK(wl2 <= 1e-10, "L^2 disagrees with l2_local");
+    CHECK(wl2 <= tol::ff(1e-10, 1e-3), "L^2 disagrees with l2_local");
     // Scale guards: without these, both bounds pass trivially if the quantity is 0.
     CHECK(kscale > 1.0,   "E_kin is suspiciously small -- the bound above would be vacuous");
     CHECK(l2scale > 1.0,  "L^2 is suspiciously small -- the bound above would be vacuous");
@@ -266,7 +267,7 @@ static void test_validity(const Ansatz& a, cublasHandle_t h) {
     std::printf("  psi_double vs CPU psi(): %.2e\n", wpd);
     CHECK(mism == 0, "device validity mask disagrees with local_E's early-return chain");
     CHECK(n_split_outside == 0, "the LU singularity split reaches walkers that were not constructed singular");
-    CHECK(wpd <= 1e-10, "device psi_double disagrees with CPU psi()");
+    CHECK(wpd <= tol::ff(1e-10, 1e-3), "device psi_double disagrees with CPU psi()");
     CHECK(n_valid > 0 && n_psi > 0, "validity test saw only one outcome -- it proves nothing");
 }
 
@@ -355,7 +356,11 @@ static void test_chunk_invariance(const Ansatz& a, cublasHandle_t h) {
                 np, nd, ne);
     // Bitwise: chunking changes only GEMM row counts and jet block strides, never
     // an accumulation order, so anything but exact equality is a layout bug.
-    CHECK(np == 0 && nd == 0 && ne == 0, "chunking changes the result");
+    // Not under fp32_forward: cuBLAS SGEMM picks its kernel -- and so its
+    // reduction order -- by matrix size, so the jet psi / E_kin move at float
+    // rounding level with the chunk. The determinants (FP64 path) stay exact,
+    // and run-to-run determinism at a fixed chunk is unaffected.
+    CHECK(fp32_forward ? nd == 0 : (np == 0 && nd == 0 && ne == 0), "chunking changes the result");
 }
 
 int main() {

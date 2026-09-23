@@ -163,34 +163,44 @@ __global__ void orb_seed_kernel(const real* __restrict__ rho, const real* __rest
 }
 
 // Fill O's
-__global__ void o_finalize_kernel(double* __restrict__ O_first, const unsigned char* __restrict__ valid, const real* __restrict__ S, const real* __restrict__ x_sh, real alpha, std::size_t P, int Bc, int w_off) {
+__global__ void o_finalize_kernel(const double* __restrict__ src, opool_t* __restrict__ dst, const unsigned char* __restrict__ valid, const real* __restrict__ S, const real* __restrict__ x_sh, real alpha, std::size_t P, int Bc, int w_off) {
     const int wl = blockIdx.x;
     if (wl >= Bc) return;
     const std::size_t w = (std::size_t)w_off + wl;
-    double* row = O_first + (std::size_t)wl * P;
+    const double* in = src + (std::size_t)wl * P;
+    opool_t* row = dst + (std::size_t)wl * P;
 
     if (!valid[w]) {
-        for (std::size_t k = threadIdx.x; k < P; k += blockDim.x) row[k] = 0.0;
+        for (std::size_t k = threadIdx.x; k < P; k += blockDim.x) row[k] = (opool_t)0;
         return;
     }
     const real Sw = S[w];
-    for (std::size_t k = threadIdx.x; k < P - 1; k += blockDim.x) row[k] = row[k] / Sw;
+    for (std::size_t k = threadIdx.x; k < P - 1; k += blockDim.x) row[k] = (opool_t)(in[k] / Sw);
 
     if (threadIdx.x == 0) {
         const real* xw = x_sh + w * D;
         real r2 = (real)0;
         for (int i = 0; i < D; i++) { const real c = xw[i]; r2 += c * c; }
         const real r_env = sqrt(r2 + (real)(eps_env * eps_env));
-        row[P - 1] = -exp(alpha) * r_env;
+        row[P - 1] = (opool_t)(-exp(alpha) * r_env);
     }
 }
+
+// Where backprop writes a chunk's FP64 O rows: straight into an FP64 pool, or into the staging buffer when the pool is float 
+template <typename T>
+static double* o_rows_fp64(DeviceState& ds, T* pool_rows) {
+    if constexpr (std::is_same<T, double>::value) { (void)ds; return pool_rows; }
+    else { (void)pool_rows; return ds.O_stage.d; }
+}
+
 
 // Evaluate full Os 
 void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cudaStream_t stream, int chunk) {
     if (B <= 0) return;
     if (ds.cache_rho.rows_cap == 0) throw std::runtime_error("assemble_O_batch: grow_phase5 has not run");
     if ((std::size_t)(r + 1) * (std::size_t)B > ds.Ns_max) throw std::runtime_error("assemble_O_batch: record row beyond O_pool");
-    const int C = (chunk > 0) ? chunk : B;
+    const int C_req = (chunk > 0) ? chunk : B;
+    const int C = fp32_opool ? std::min(C_req, opool_stage_rows) : C_req;
     const std::size_t P = ds.P;
 
     real alpha;
@@ -207,7 +217,8 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
 
     for (int w_off = 0; w_off < B; w_off += C) {
         const int Bc = std::min(C, B - w_off);
-        double* O_first = ds.O_pool.d + ((std::size_t)r * B + (std::size_t)w_off) * P;
+        opool_t* O_dst = ds.O_pool.d + ((std::size_t)r * B + (std::size_t)w_off) * P;
+        double* O_first = o_rows_fp64(ds, O_dst);
 
         { VMC_PROF("seeds", stream); CUDA_CHECK(cudaMemcpy(ds.bp_a.d, ds.dets_psi.d + (std::size_t)w_off * K, (std::size_t)Bc * K * sizeof(real), cudaMemcpyDeviceToDevice)); }
         backprop_net(handle, ds.rho_net_d, ds.cache_rho, ds.params.d, ds.bp_a.d, ds.bp_b.d, ds.bp_wt.d, 1, Bc, w_off, O_first, P, ds.dpsi_dxi.d, stream);
@@ -232,7 +243,7 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
         backprop_net(handle, ds.orb_net_d, ds.cache_orb, ds.params.d, ds.bp_a.d, ds.bp_b.d, ds.bp_wt.d, N, Bc, w_off, O_first, P, nullptr, stream);
 
         { VMC_PROF("o_finalize", stream);
-          o_finalize_kernel<<<(unsigned)Bc, 128, 0, stream>>>(O_first, ds.valid_loc.d, ds.S.d, ds.x_sh.d, alpha, P, Bc, w_off);
+          o_finalize_kernel<<<(unsigned)Bc, 128, 0, stream>>>(O_first, O_dst, ds.valid_loc.d, ds.S.d, ds.x_sh.d, alpha, P, Bc, w_off);
           cuda_sync_check("o_finalize"); }
     }
 }

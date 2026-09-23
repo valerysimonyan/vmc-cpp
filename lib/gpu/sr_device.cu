@@ -21,6 +21,76 @@ static double ddot(cublasHandle_t h, std::size_t n, const double* a, const doubl
 static const int T256 = 256;
 static unsigned blocks_for(std::size_t n) { return (unsigned)((n + T256 - 1) / T256); }
 
+static constexpr int ot_slabs = 32;
+
+// Sum_i O_ij x_i
+__global__ void ot_x_partial_kernel(const float* __restrict__ O, const double* __restrict__ x, double* __restrict__ part, std::size_t Ns, std::size_t P) {
+    const std::size_t j = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= P) return;
+    const std::size_t s = blockIdx.y, per = (Ns + ot_slabs - 1) / ot_slabs;
+    const std::size_t i0 = s * per, i1 = (i0 + per < Ns) ? i0 + per : Ns;
+    double acc = 0.0;
+    for (std::size_t i = i0; i < i1; i++) acc += (double)O[i*P + j] * x[i];
+    part[s*P + j] = acc;
+}
+
+__global__ void ot_x_reduce_kernel(const double* __restrict__ part, double* __restrict__ y, std::size_t P) {
+    const std::size_t j = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= P) return;
+    double acc = 0.0;
+    for (int s = 0; s < ot_slabs; s++) acc += part[(std::size_t)s*P + j];
+    y[j] = acc;
+}
+
+// Sum_j O_ij v_j
+__global__ void o_v_kernel(const float* __restrict__ O, const double* __restrict__ v, double* __restrict__ t, std::size_t P) {
+    __shared__ double red[T256];
+    const std::size_t i = blockIdx.x;
+    const float* row = O + i * P;
+    double acc = 0.0;
+    for (std::size_t j = threadIdx.x; j < P; j += T256) acc += (double)row[j] * v[j];
+    red[threadIdx.x] = acc;
+    __syncthreads();
+    for (int w = T256 / 2; w > 0; w >>= 1) {
+        if ((int)threadIdx.x < w) red[threadIdx.x] += red[threadIdx.x + w];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) t[i] = red[0];
+}
+
+static DeviceArray<double>& ot_scratch() { static DeviceArray<double> a; return a; }
+
+// y = O^T x 
+template <typename T>
+static void gemv_OT(cublasHandle_t h, const T* O, const double* x, double* y, std::size_t Ns, std::size_t P, cudaStream_t stream, const char* what) {
+    if constexpr (std::is_same<T, float>::value) {
+        (void)h; (void)what;
+        DeviceArray<double>& part = ot_scratch();
+        if (part.n < (std::size_t)ot_slabs * P) part.alloc((std::size_t)ot_slabs * P);
+        ot_x_partial_kernel<<<dim3(blocks_for(P), ot_slabs), T256, 0, stream>>>(O, x, part.d, Ns, P);
+        ot_x_reduce_kernel<<<blocks_for(P), T256, 0, stream>>>(part.d, y, P);
+        cuda_sync_check("gemv_OT (fp32_opool)");
+    } else {
+        cublasSetStream(h, stream);
+        const double one = 1.0, zero = 0.0;
+        check_blas(cublasDgemv(h, CUBLAS_OP_N, (int)P, (int)Ns, &one, O, (int)P, x, 1, &zero, y, 1), what);
+    }
+}
+// t = O v.
+template <typename T>
+static void gemv_O(cublasHandle_t h, const T* O, const double* v, double* t, std::size_t Ns, std::size_t P, cudaStream_t stream, const char* what) {
+    if constexpr (std::is_same<T, float>::value) {
+        (void)h; (void)what;
+        o_v_kernel<<<(unsigned)Ns, T256, 0, stream>>>(O, v, t, P);
+        cuda_sync_check("gemv_O (fp32_opool)");
+    } else {
+        cublasSetStream(h, stream);
+        const double one = 1.0, zero = 0.0;
+        check_blas(cublasDgemv(h, CUBLAS_OP_T, (int)P, (int)Ns, &one, O, (int)P, v, 1, &zero, t, 1), what);
+    }
+}
+
+
 // Check sample validity, ignore if invalid
 __global__ void mask_kernel(const unsigned char* __restrict__ valid, double* __restrict__ m, std::size_t Ns) {
     std::size_t i = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -40,30 +110,28 @@ __global__ void div_kernel(double* __restrict__ x, double d, std::size_t n) {
     x[i] = x[i] / d;
 }
 
-void O_exp_device(cublasHandle_t h, const double* O_pool, const double* m, std::size_t Ns, std::size_t P, long long n_valid, double* O_exp, cudaStream_t stream) {
-    cublasSetStream(h, stream);
-    const double one = 1.0, zero = 0.0;
-    check_blas(cublasDgemv(h, CUBLAS_OP_N, (int)P, (int)Ns, &one, O_pool, (int)P, m, 1, &zero, O_exp, 1), "O_exp_device");
+void O_exp_device(cublasHandle_t h, const opool_t* O_pool, const double* m, std::size_t Ns, std::size_t P, long long n_valid, double* O_exp, cudaStream_t stream) {
+    gemv_OT(h, O_pool, m, O_exp, Ns, P, stream, "O_exp_device");
     if (n_valid == 0) { CUDA_CHECK(cudaMemset(O_exp, 0, P * sizeof(double))); return; }
     div_kernel<<<blocks_for(P), T256, 0, stream>>>(O_exp, (double)n_valid, P);
     cuda_sync_check("O_exp_device");
 }
 
 // Evaluate diagonal part of SR matrix
-__global__ void S_diag_kernel(const double* __restrict__ O_pool, const unsigned char* __restrict__ valid, const double* __restrict__ O_exp, std::size_t Ns, std::size_t P, double n_valid, double* __restrict__ S_diag) {
+__global__ void S_diag_kernel(const opool_t* __restrict__ O_pool, const unsigned char* __restrict__ valid, const double* __restrict__ O_exp, std::size_t Ns, std::size_t P, double n_valid, double* __restrict__ S_diag) {
     std::size_t j = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (j >= P) return;
     const double oe = O_exp[j];
     double acc = 0.0;
     for (std::size_t i = 0; i < Ns; i++) {
         if (!valid[i]) continue;
-        const double diff = O_pool[i*P + j] - oe;
+        const double diff = (double)O_pool[i*P + j] - oe;
         acc += diff * diff;
     }
     S_diag[j] = acc / n_valid;
 }
 
-void S_diag_device(const double* O_pool, const unsigned char* valid, const double* O_exp, std::size_t Ns, std::size_t P, long long n_valid, double* S_diag, cudaStream_t stream) {
+void S_diag_device(const opool_t* O_pool, const unsigned char* valid, const double* O_exp, std::size_t Ns, std::size_t P, long long n_valid, double* S_diag, cudaStream_t stream) {
     if (P == 0) return;
     S_diag_kernel<<<blocks_for(P), T256, 0, stream>>>(O_pool, valid, O_exp, Ns, P, (double)n_valid, S_diag);
     cuda_sync_check("S_diag_device");
@@ -131,12 +199,10 @@ __global__ void grad_final_kernel(double* __restrict__ g, const double* __restri
     g[k] = 2.0 * (g[k] / nv - E_clip_mean * O_exp[k]);
 }
 
-void grad_device(cublasHandle_t h, const double* O_pool, const double* E_pool, const unsigned char* valid, const double* O_exp, std::size_t Ns, std::size_t P, long long n_valid, const ClipStats& cs, double* E_clip, double* grad, cudaStream_t stream) {
+void grad_device(cublasHandle_t h, const opool_t* O_pool, const double* E_pool, const unsigned char* valid, const double* O_exp, std::size_t Ns, std::size_t P, long long n_valid, const ClipStats& cs, double* E_clip, double* grad, cudaStream_t stream) {
     clip_kernel<<<blocks_for(Ns), T256, 0, stream>>>(E_pool, valid, cs.clip_lo, cs.clip_hi, E_clip, Ns);
     cuda_sync_check("clip_kernel");
-    cublasSetStream(h, stream);
-    const double one = 1.0, zero = 0.0;
-    check_blas(cublasDgemv(h, CUBLAS_OP_N, (int)P, (int)Ns, &one, O_pool, (int)P, E_clip, 1, &zero, grad, 1), "grad_device");
+    gemv_OT(h, O_pool, E_clip, grad, Ns, P, stream, "grad_device");
     grad_final_kernel<<<blocks_for(P), T256, 0, stream>>>(grad, O_exp, (double)n_valid, cs.E_clip_mean, P);
     cuda_sync_check("grad_device");
 }
@@ -167,13 +233,12 @@ __global__ void apply_tail_kernel(double* __restrict__ out, const double* __rest
 void SROpDevice::apply(const double* v, double* out, bool raw) {
     VMC_PROF("matvec", 0);
     cublasSetStream(h, 0);
-    const double one = 1.0, zero = 0.0;
     double Oexp_v = 0.0;
     check_blas(cublasDdot(h, (int)P, O_exp, 1, v, 1, &Oexp_v), "SROpDevice::apply dot");
-    check_blas(cublasDgemv(h, CUBLAS_OP_T, (int)P, (int)Ns, &one, O_pool, (int)P, v, 1, &zero, t, 1), "SROpDevice::apply Ov");
+    gemv_O(h, O_pool, v, t, Ns, P, 0, "SROpDevice::apply Ov");
     center_kernel<<<blocks_for(Ns), T256, 0, 0>>>(t, m, Oexp_v, Ns);
     cuda_sync_check("center_kernel");
-    check_blas(cublasDgemv(h, CUBLAS_OP_N, (int)P, (int)Ns, &one, O_pool, (int)P, t, 1, &zero, out, 1), "SROpDevice::apply OTt");
+    gemv_OT(h, O_pool, t, out, Ns, P, 0, "SROpDevice::apply OTt");
     apply_tail_kernel<<<blocks_for(P), T256, 0, 0>>>(out, v, S_diag, d_rms, (double)n_valid, lambda_diag, eps_abs, raw, P);
     cuda_sync_check("apply_tail_kernel");
 }

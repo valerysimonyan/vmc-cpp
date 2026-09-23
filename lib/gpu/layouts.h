@@ -7,10 +7,17 @@
 
 #include <cublas_v2.h>
 
+#include <type_traits>
+
+
 inline constexpr int rows_per_combo = 4;
 inline constexpr std::size_t rows_max_phase3 =  (std::size_t)n_walkers * (std::size_t)N * (std::size_t)rows_per_combo;
 
 inline constexpr int jet_C = D + 2;
+
+// Set type between float and double
+using fwd_t   = std::conditional_t<fp32_forward, float, double>;
+using opool_t = std::conditional_t<fp32_opool,   float, double>;
 
 // Walkers per jet chunk: jet_chunk, or the whole batch when jet_chunk is 0.
 inline constexpr int jet_walkers = (jet_chunk > 0) ? jet_chunk : n_walkers;
@@ -25,6 +32,19 @@ inline void blas_bind(cublasHandle_t handle, cudaStream_t stream) {
     cudaStream_t cur = nullptr;
     cublasGetStream(handle, &cur);
     if (cur != stream) cublasSetStream(handle, stream);
+}
+
+// Leave open. double and single precision as options for data types for W_ij * v_j
+template <typename T>
+inline void gemm_rm(cublasHandle_t handle, int rows, int in_w, int out_w, const T* In, const T* W, T* Out, cudaStream_t stream = 0) {
+    blas_bind(handle, stream);
+    const T alpha = (T)1, beta = (T)0;
+    cublasStatus_t st;
+    if constexpr (std::is_same<T, double>::value)
+        st = cublasDgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, out_w, rows, in_w, &alpha, W, in_w, In, in_w, &beta, Out, out_w);
+    else
+        st = cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, out_w, rows, in_w, &alpha, W, in_w, In, in_w, &beta, Out, out_w);
+    if (st != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("gemm_rm: cublas GEMM failed with status " + std::to_string((int)st));
 }
 
 // GPU accelerated pass through network layer, after all it is just matrix multiplication

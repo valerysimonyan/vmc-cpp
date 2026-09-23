@@ -130,6 +130,14 @@ inline constexpr const char* prof_report_file = "BENCH.md";
 
 inline constexpr bool use_cuda_graphs = true;
 
+// Precision settings, dependent on precision set mismatch tolerance for psi between Jet and float
+inline constexpr bool fp32_forward = true;
+inline constexpr bool fp32_opool   = true;
+inline constexpr double psi_mismatch_tol = fp32_forward ? 1e-4 : 1e-6;
+
+// 
+inline constexpr int opool_stage_rows = 1024;
+
 // Transfer Learning Settings
 inline constexpr bool resume = false;             // Load best_checkpoint.txt at startup if present
 inline constexpr const char* transfer_from = "";  // Path to a source checkpoint; empty = disabled

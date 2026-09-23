@@ -20,6 +20,13 @@ struct DeviceNet {
     int max_width = 0; 
     int hidden_width = 0;
 
+    const float* params_f = nullptr;
+    const real*  params_src = nullptr;
+    float* in_f = nullptr;   std::size_t in_f_cap = 0;
+    float* out_f = nullptr;  std::size_t out_f_cap = 0;
+    float* jin_f = nullptr;  std::size_t jin_f_cap = 0;
+    float* jout_f = nullptr; std::size_t jout_f_cap = 0;
+
     void build(const Network& net, std::size_t base);
 };
 

@@ -170,7 +170,7 @@ __global__ void validity_jet_kernel(const real* __restrict__ J_psi, const real* 
     if (!isfinite(Sv) || fabs(Sv) < (real)1e-290) { valid[gw] = 0; return; }
 
     const real v = J_psi[gw];
-    const bool mismatch = fabs(v - pd) > (real)1e-6 * fmax((real)1, fabs(pd));
+    const bool mismatch = fabs(v - pd) > (real)psi_mismatch_tol * fmax((real)1, fabs(pd)); // Set precision tolerance depending on precision chosen
     if (!isfinite(v) || fabs(v) < (real)1e-290 || mismatch) { valid[gw] = 0; return; }
 
     if (!isfinite(E_kin[gw])) { valid[gw] = 0; return; }

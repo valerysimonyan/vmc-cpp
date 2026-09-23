@@ -43,7 +43,14 @@ struct DeviceState {
     DeviceArray<real> params;  //P, flat w/ [h_net.params, rho_net.params, orb_net.paramas, alpha]
 
     DeviceArray<double> E_pool;       // Ns_max
-    DeviceArray<double> O_pool;       // Ns_max * P
+    DeviceArray<opool_t> O_pool;
+    DeviceArray<double>  O_stage;     // fp32_opool: opool_stage_rows * P FP64 rows before the cast
+
+    // Float version of params
+    DeviceArray<float> params_f;                 // P
+    DeviceArray<float> fwd_in_f, fwd_out_f;      // value chain: cast-down input, output layer
+    DeviceArray<float> jet_in_f, jet_out_f;      // jet chain: same
+
     DeviceArray<uint8_t> valid_pool;  // Ns_max
     
     std::size_t B = 0, P = 0, Ns_max = 0;

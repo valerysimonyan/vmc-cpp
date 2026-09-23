@@ -4,6 +4,7 @@
 // later kernel result can be trusted, because every one of them depends on the
 // allocation, transfer and error paths exercised here.
 #include "../lib/gpu/arena.h"
+#include "../tests/test_tolerances.h"
 #include "../lib/precision.h"
 #include "../lib/gpu/gpu_util.h"
 #include "../lib/gpu/smoke.h"
@@ -141,8 +142,9 @@ static void test_device_state(const Ansatz& a) {
         + B * sizeof(uint8_t)                             // valid
         + B * sizeof(unsigned long long)                  // rng_ctr
         + P * sizeof(real)                                // params
+        + (fp32_forward ? P * sizeof(float) : 0)          // params_f, the float mirror (6.3)
         + Ns * sizeof(double)                             // E_pool
-        + Ns * P * sizeof(double)                         // O_pool
+        + Ns * P * sizeof(opool_t)                        // O_pool (float under fp32_opool)
         + Ns * sizeof(uint8_t);                           // valid_pool
     CHECK(ds.total_bytes() == expect,
           "DeviceState: reported bytes " + std::to_string(ds.total_bytes())
@@ -441,7 +443,7 @@ static void test_net_oracle(const Ansatz& a, cublasHandle_t handle) {
     ds.rho_out.down(g_rho.data(), g_rho.size());
     ds.orb_out.down(g_orb.data(), g_orb.size());
 
-    const double tol = real_is_double ? 1e-12 : 1e-4;
+    const double tol = tol::ff(real_is_double ? 1e-12 : 1e-4, 1e-3);
     double w_xsh = 0, w_h = 0, w_xi = 0, w_rho = 0, w_orb = 0;
 
     std::vector<double> ba, bb, single(dim + 2), cpu_xi(m_feat);
@@ -487,7 +489,7 @@ static void test_net_oracle(const Ansatz& a, cublasHandle_t handle) {
                 w_xsh, w_h, w_xi, w_rho, w_orb);
     CHECK(w_xsh <= (real_is_double ? 1e-15 : 1e-6), "shift_to_com disagrees with CPU");
     CHECK(w_h   <= tol, "h_net forward disagrees with CPU forward_opt<double>");
-    CHECK(w_xi  <= (real_is_double ? 1e-13 : 1e-5), "xi_reduce disagrees with CPU accumulation");
+    CHECK(w_xi  <= tol::ff(real_is_double ? 1e-13 : 1e-5, 1e-4), "xi_reduce disagrees with CPU accumulation");
     CHECK(w_rho <= tol, "rho_net forward disagrees with CPU forward_opt<double>");
     CHECK(w_orb <= tol, "orb_net forward disagrees with CPU forward_opt<double>");
 }
@@ -605,7 +607,7 @@ static void test_logpsi_oracle(const Ansatz& a, cublasHandle_t handle) {
     }
     std::printf("  log|psi| oracle (%d configs): worst abs diff %.3e\n", n_finite, worst);
     CHECK(n_finite >= B - 2, "too many non-finite log|psi| on ordinary configs");
-    CHECK(worst <= (real_is_double ? 1e-11 : 1e-3),
+    CHECK(worst <= tol::ff(real_is_double ? 1e-11 : 1e-3, 2e-3),
           "log|psi| worst absolute difference " + std::to_string(worst));
 }
 
@@ -787,7 +789,7 @@ static void test_assembly_orientation(const Ansatz& a, cublasHandle_t handle) {
     std::printf("  Slater assembly vs CPU ws.dM: worst rel diff %.3e (%zu asymmetric pairs)\n",
                 worst, asym);
     CHECK(asym > 0, "Slater matrices are symmetric -- orientation test is vacuous");
-    CHECK(worst <= (real_is_double ? 1e-13 : 1e-5),
+    CHECK(worst <= tol::ff(real_is_double ? 1e-13 : 1e-5, 1e-4),
           "assemble_M disagrees with the CPU's buf.M: " + std::to_string(worst));
 }
 
@@ -912,7 +914,11 @@ static void test_table_oracle(const Ansatz& a, cublasHandle_t handle) {
     // S is a sum of K determinants, so it inherits their conditioning tail --
     // same reasoning as test_dets_isolated. A wrong combo selection or a
     // transposed assembly would move the median, not the tail.
-    if (real_is_double) {
+    if (fp32_forward) {                // 6.3 ladder (test_tolerances.h)
+        CHECK(med  <= 1e-5, "S_from_table_batch: median rel diff " + std::to_string(med));
+        CHECK(p999 <= 3e-3, "S_from_table_batch: p99.9 rel diff " + std::to_string(p999));
+        CHECK(mx   <= 1e-2, "S_from_table_batch: max rel diff " + std::to_string(mx));
+    } else if (real_is_double) {
         CHECK(med  <= 1e-14, "S_from_table_batch: median rel diff " + std::to_string(med));
         CHECK(p999 <= 1e-11, "S_from_table_batch: p99.9 rel diff " + std::to_string(p999));
         CHECK(mx   <= 1e-9,  "S_from_table_batch: max rel diff " + std::to_string(mx));
@@ -1108,7 +1114,9 @@ static void test_logp_cache_integrity(const Ansatz& a, cublasHandle_t handle) {
     // 1e-9 absolute on a log, i.e. 1e-9 relative on |psi|. The device and CPU
     // evaluators differ in the last bits anyway (GEMM vs sequential sums), so
     // this bounds DRIFT, not agreement -- a commit bug shows as O(1).
-    CHECK(worst <= 1e-9, "logp cache drifted by " + std::to_string(worst));
+    // fp32_forward: the table and full-evaluation paths run differently shaped
+    // float GEMMs, so a cached logp and a recomputed one differ at ~1e-6.
+    CHECK(worst <= tol::ff(1e-9, 1e-4), "logp cache drifted by " + std::to_string(worst));
 }
 
 // --- 18. acceptance sanity --------------------------------------------------

@@ -1,5 +1,6 @@
 #include "arena.h"
 #include "exchange_kernels.h"
+#include "net_kernels.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -20,7 +21,7 @@ std::size_t check_param_layout(const Ansatz& a) {
 std::size_t DeviceState::total_bytes() const {
     return x.bytes() + s.bytes() + t.bytes() + logp.bytes() + valid.bytes()
             + rng_ctr.bytes() + params.bytes()
-            + E_pool.bytes() + O_pool.bytes() + valid_pool.bytes();
+            + E_pool.bytes() + O_pool.bytes() + valid_pool.bytes() + params_f.bytes();
 }
 
 DeviceState::DeviceState(const Ansatz& a, bool verbose) {
@@ -39,7 +40,7 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose) {
     }
 
     // Check if we're over the O_pool data limit
-    const double o_pool_gb = (double)Ns_max * (double)P * sizeof(double)
+    const double o_pool_gb = (double)Ns_max * (double)P * sizeof(opool_t)
                              / (1024.0 * 1024.0 * 1024.0);
     if (o_pool_gb > o_pool_max_gb) {
         std::ostringstream oss;
@@ -55,7 +56,7 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose) {
     const std::size_t want =
           B*(std::size_t)D*sizeof(real) + 2*B*(std::size_t)N*sizeof(real)
         + B*sizeof(real) + B*sizeof(uint8_t) + B*sizeof(unsigned long long)
-        + P*sizeof(real) + Ns_max*sizeof(double) + Ns_max*P*sizeof(double)
+        + P*sizeof(real) + Ns_max*sizeof(double) + Ns_max*P*sizeof(opool_t)
         + Ns_max*sizeof(uint8_t);
 
     // Try allocating thememory, if it fails print issue and throw an error
@@ -69,6 +70,7 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose) {
         params.alloc(P);
         E_pool.alloc(Ns_max);
         O_pool.alloc(Ns_max * P);
+        if constexpr (fp32_forward) params_f.alloc(P);
         valid_pool.alloc(Ns_max);
     } catch (const std::exception& e) {
         std::size_t free_b = 0, total_b = 0;
@@ -135,7 +137,7 @@ void DeviceState::grow_phase52(bool verbose) {
 
 std::size_t DeviceState::phase5_bytes() const {
     return cache_h.bytes() + cache_rho.bytes() + cache_orb.bytes()
-         + bp_a.bytes() + bp_b.bytes() + dpsi_dxi.bytes() + bp_wt.bytes();
+         + bp_a.bytes() + bp_b.bytes() + dpsi_dxi.bytes() + bp_wt.bytes() + O_stage.bytes();
 }
 
 static void check_backprop_layout(const Ansatz& a, const DeviceNet& dn, const Network& net, std::size_t base, const char* name) {
@@ -179,6 +181,7 @@ void DeviceState::grow_phase5(const Ansatz& a, bool verbose) {
             biggest_W = std::max(biggest_W, (std::size_t)L.in_w * L.out_w);
         }
     bp_wt.alloc(biggest_W);
+    if constexpr (fp32_opool) O_stage.alloc((std::size_t)std::min<std::size_t>(B, opool_stage_rows) * P);
     bp_a.alloc(rows * (std::size_t)widest);
     bp_b.alloc(rows * (std::size_t)widest);
     dpsi_dxi.alloc(B * (std::size_t)m_feat);
@@ -258,7 +261,7 @@ std::size_t DeviceState::phase3_bytes() const {
     return x_sh.bytes() + feat_in.bytes() + h_out.bytes() + xi.bytes()
          + rho_out.bytes() + orb_out.bytes() + act_a.bytes() + act_b.bytes()
          + lu_ptrs.bytes() + lu_info.bytes() + lu_piv.bytes()
-         + M_batch.bytes() + dets.bytes() + S.bytes();
+         + M_batch.bytes() + dets.bytes() + S.bytes() + fwd_in_f.bytes() + fwd_out_f.bytes();
 }
 
 // Build networks
@@ -283,6 +286,14 @@ void DeviceState::grow_phase3(const Ansatz& a, bool verbose) {
     orb_out.alloc(rows * (std::size_t)(K * N));    
     act_a.alloc(rows * (std::size_t)hidden_width);
     act_b.alloc(rows * (std::size_t)hidden_width);
+    if constexpr (fp32_forward) {
+        fwd_in_f.alloc(rows * (std::size_t)std::max(dim + 2, m_feat));
+        fwd_out_f.alloc(rows * (std::size_t)std::max(std::max(m_feat, K), K * N));
+        for (DeviceNet* dn : {&h_net_d, &rho_net_d, &orb_net_d}) {
+            dn->in_f = fwd_in_f.d;  dn->in_f_cap = fwd_in_f.n;
+            dn->out_f = fwd_out_f.d; dn->out_f_cap = fwd_out_f.n;
+        }
+    }
     lu_ptrs.alloc((std::size_t)K * B);
     lu_info.alloc((std::size_t)K * B);    
     lu_piv.alloc((std::size_t)N * K * B);
@@ -325,6 +336,10 @@ void DeviceState::upload_params(const Ansatz& a, PinnedArray& staging) {
     real* hr = reinterpret_cast<real*>(hd + P);
     convert_copy(hr, hd, P);
     params.up(hr, P);
+    if constexpr (fp32_forward) {
+        cast_to_float(params.d, params_f.d, P);
+        for (DeviceNet* dn : {&h_net_d, &rho_net_d, &orb_net_d}) { dn->params_f = params_f.d; dn->params_src = params.d; }
+    }
 }
 
 // Upload walkers to GPU
@@ -392,7 +407,7 @@ void DeviceState::grow_phase33(bool verbose) {
 // Jet network size
 std::size_t DeviceState::phase4_bytes() const {
     return jet_feat.bytes() + jet_h.bytes() + jet_xi.bytes() + jet_rho.bytes()
-         + jet_orb.bytes() + jet_a.bytes() + jet_b.bytes();
+         + jet_orb.bytes() + jet_a.bytes() + jet_b.bytes() + jet_in_f.bytes() + jet_out_f.bytes();
 }
 
 // 
@@ -411,7 +426,8 @@ void DeviceState::grow_phase4(bool verbose) {
     const std::size_t n_rho = C * W * (std::size_t)K;
     const std::size_t n_orb = C * rows * (std::size_t)(K * N);
     const std::size_t n_pp = C * rows * (std::size_t)hidden;
-    const std::size_t want = (n_feat + n_h + n_xi + n_rho + n_orb + 2*n_pp) * sizeof(real);
+    const std::size_t want = (n_feat + n_h + n_xi + n_rho + n_orb + 2*n_pp) * sizeof(real)
+        + (fp32_forward ? (std::max(n_feat, n_xi) + std::max(std::max(n_h, n_rho), n_orb)) * sizeof(float) : 0);
 
     const double grand_gb = (double)(total_bytes() + phase3_bytes() + phase33_bytes() + want) / (1024.0*1024.0*1024.0);
 
@@ -437,6 +453,16 @@ void DeviceState::grow_phase4(bool verbose) {
     jet_orb.alloc(n_orb);
     jet_a.alloc(n_pp);
     jet_b.alloc(n_pp);
+
+    if constexpr (fp32_forward) {
+        jet_in_f.alloc(std::max(n_feat, n_xi));
+        jet_out_f.alloc(std::max(std::max(n_h, n_rho), n_orb));
+        for (DeviceNet* dn : {&h_net_d, &rho_net_d, &orb_net_d}) {
+            dn->jin_f = jet_in_f.d;   dn->jin_f_cap = jet_in_f.n;
+            dn->jout_f = jet_out_f.d; dn->jout_f_cap = jet_out_f.n;
+        }
+    }
+
 
     if (verbose) {
         auto mib = [](std::size_t b){ return (double)b/(1024.0*1024.0); };

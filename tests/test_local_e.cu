@@ -1,5 +1,6 @@
 // Phase 4.3: 2-body exchange on device, full local_E parity, hybrid-v2 determinism.
 #include "../lib/gpu/arena.h"
+#include "../tests/test_tolerances.h"
 #include "../lib/gpu/eval.h"
 #include "../lib/gpu/jet_eval.h"
 #include "../lib/gpu/record_device.h"
@@ -150,7 +151,7 @@ static void test_exchange(const Ansatz& a, cublasHandle_t h) {
     std::printf("    pairs: %d same_s, %d same_t, %d mixed;  evaluated ratios CPU %lld  device active slots %lld\n",
                 n_same_s, n_same_t, n_mixed, n_eval_cpu, n_active_dev);
     // Relative to the summand magnitude, not the prompt's absolute 1e-9: see cpu_vnuc.
-    CHECK(worst_rel <= 1e-11, "device V_nuc disagrees with local_E's exchange loop");
+    CHECK(worst_rel <= tol::ff(1e-11, 1e-3), "device V_nuc disagrees with local_E's exchange loop");
     CHECK(n_active_dev == n_eval_cpu, "active slots are not exactly the ratios local_E evaluates");
     CHECK(gate_mism == 0, "device rank-2 gate disagrees with rank2_well_conditioned");
     // Coverage, for the branches this (N, N_u, N_p) sector can produce at all: a
@@ -197,8 +198,8 @@ static void test_exchange(const Ansatz& a, cublasHandle_t h) {
     std::printf("  exchange (forced host fallback): %d walkers flagged, %d took it;  V_nuc rel-to-summands %.2e  (untouched walkers %.2e)\n",
                 n_forced, nf, worst_fb, worst_kept);
     CHECK(nf == n_forced, "fallback did not run for exactly the flagged walkers");
-    CHECK(worst_fb <= 1e-11, "fallback V_nuc disagrees with local_E's LU branch");
-    CHECK(worst_kept <= 1e-11, "fallback disturbed walkers it should not have touched");
+    CHECK(worst_fb <= tol::ff(1e-11, 1e-3), "fallback V_nuc disagrees with local_E's LU branch");
+    CHECK(worst_kept <= tol::ff(1e-11, 1e-3), "fallback disturbed walkers it should not have touched");
 
     // Natural gate: exactly coincident particles zero SOME determinants (4.2
     // found cuBLAS and lu_det disagree on how many), which trips the per-walker
@@ -291,12 +292,12 @@ static void test_local_E_parity(const Ansatz& a, cublasHandle_t h) {
                 n_valid, escale, wE, wErel, mask_mism, B);
     std::printf("    per term: E_kin rel %.2e   V_3N abs %.2e   V_coul abs %.2e   V_nuc abs %.2e / rel-to-summands %.2e\n", wk_rel, wv3, wc, wn, wn_rel);
     std::printf("    worst-abs V_nuc walker has V_nuc = %.4g MeV\n", wn_at);
-    CHECK(mask_mism == 0,  "device validity mask disagrees with CPU local_E");
-    CHECK(wErel <= 1e-11,  "device E_loc disagrees with CPU local_E");
-    CHECK(wk_rel <= 1e-11, "E_kin term disagrees");
+    CHECK(mask_mism <= tol::ff(0, B / 100), "device validity mask disagrees with CPU local_E");
+    CHECK(wErel <= tol::ff(1e-11, 1e-3),  "device E_loc disagrees with CPU local_E");
+    CHECK(wk_rel <= tol::ff(1e-11, 1e-2), "E_kin term disagrees");
     CHECK(wv3 <= 1e-9,     "V_3N term disagrees");
     CHECK(wc <= 1e-12,     "V_coulomb term disagrees");
-    CHECK(wn_rel <= 1e-11, "V_nuc term disagrees");
+    CHECK(wn_rel <= tol::ff(1e-11, 1e-3), "V_nuc term disagrees");
     CHECK(n_valid > B / 2, "too few valid walkers for the parity check to mean anything");
 }
 
@@ -347,7 +348,7 @@ static void test_determinism(const Ansatz& a, cublasHandle_t h) {
         xfer_stats().reset();
         download_iteration(dv.ds, B, records, st, R.it);
         R.up = xfer_stats().bytes_up; R.dn = xfer_stats().bytes_dn;
-        R.O.resize(Ns * P); dv.ds.O_pool.down(R.O.data(), R.O.size());
+        R.O = opool_down(dv.ds.O_pool, Ns * P);
     };
     Run r1, r2; run_once(r1); run_once(r2);
 

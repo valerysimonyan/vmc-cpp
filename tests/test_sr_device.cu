@@ -1,5 +1,6 @@
 // Phase 5.2: SR on device -- masked statistics, gradient, S*v, CG, full SR step.
 #include "../lib/gpu/arena.h"
+#include "../tests/test_tolerances.h"
 #include "../lib/gpu/eval.h"
 #include "../lib/gpu/gpu_sampler.h"
 #include "../lib/gpu/local_e.h"
@@ -48,6 +49,7 @@ static Pool make_pool(std::size_t Ns, std::size_t P, unsigned seed) {
         p.E[i] = -30.0 + 8.0 * g(rng) + ((u(rng) < 0.01) ? 400.0 * g(rng) : 0.0);          // a heavy tail for the clip to bite
         for (std::size_t j = 0; j < P; j++) p.O[i*P + j] = p.v[i] ? (0.3 + g(rng)) * scale[j] : 7.0 + g(rng);
     }
+    opool_round(p.O);        // the CPU oracle sees exactly what the device pool stores (6.3)
     return p;
 }
 
@@ -71,8 +73,8 @@ static std::vector<double> grad_scale(const std::vector<double>& O, const std::v
 // --- D1: O_exp, S_diag, gradient -------------------------------------------------
 static void test_statistics(cublasHandle_t h, ThreadPool& pool) {
     Pool pl = make_pool(4000, 3000, 11);
-    DeviceArray<double> O, E, m, Oexp, Sd, Ec, gr; DeviceArray<unsigned char> V;
-    up(O, pl.O); up(E, pl.E); V.alloc(pl.Ns); V.up(pl.v.data(), pl.Ns);
+    DeviceArray<opool_t> O; DeviceArray<double> E, m, Oexp, Sd, Ec, gr; DeviceArray<unsigned char> V;
+    opool_up(O, pl.O); up(E, pl.E); V.alloc(pl.Ns); V.up(pl.v.data(), pl.Ns);
     m.alloc(pl.Ns); Oexp.alloc(pl.P); Sd.alloc(pl.P); Ec.alloc(pl.Ns); gr.alloc(pl.P);
 
     build_mask(V.d, m.d, pl.Ns);
@@ -128,8 +130,8 @@ static void test_apply(cublasHandle_t h, ThreadPool& pool) {
     std::vector<double> out_raw, out_damp;
     op.apply(v, out_raw, true); op.apply(v, out_damp, false);
 
-    DeviceArray<double> O, m, Oexp, Sd, dr, t, dv, dout; DeviceArray<unsigned char> V;
-    up(O, pl.O); V.alloc(pl.Ns); V.up(pl.v.data(), pl.Ns); m.alloc(pl.Ns); t.alloc(pl.Ns);
+    DeviceArray<opool_t> O; DeviceArray<double> m, Oexp, Sd, dr, t, dv, dout; DeviceArray<unsigned char> V;
+    opool_up(O, pl.O); V.alloc(pl.Ns); V.up(pl.v.data(), pl.Ns); m.alloc(pl.Ns); t.alloc(pl.Ns);
     up(Oexp, Oexp_c); up(Sd, op.S_diag); up(dr, d_rms); up(dv, v); dout.alloc(pl.P);
     build_mask(V.d, m.d, pl.Ns);
     SROpDevice od; od.h = h; od.O_pool = O.d; od.O_exp = Oexp.d; od.m = m.d; od.S_diag = Sd.d; od.d_rms = dr.d; od.t = t.d;
@@ -137,8 +139,12 @@ static void test_apply(cublasHandle_t h, ThreadPool& pool) {
     od.apply(dv.d, dout.d, true);  const double wr = worst_rel(down(dout, pl.P), out_raw);
     od.apply(dv.d, dout.d, false); const double wd = worst_rel(down(dout, pl.P), out_damp);
     std::printf("  S*v apply: raw rel %.2e   damped rel %.2e\n", wr, wd);
-    CHECK(wr <= 1e-11, "device raw apply disagrees with SROp::apply");
-    CHECK(wd <= 1e-11, "device damped apply disagrees with SROp::apply");
+    // fp32_opool: same float-rounded values on both sides, but the device sums
+    // with the custom mixed-precision kernels (32 slabs, then a tree) instead of
+    // cuBLAS -- a different order, magnified on entries with sign cancellation
+    // by this plain-relative metric. Measured 1.1e-11 raw / 6.6e-11 damped.
+    CHECK(wr <= tol::fo(1e-11, 5e-10), "device raw apply disagrees with SROp::apply");
+    CHECK(wd <= tol::fo(1e-11, 5e-10), "device damped apply disagrees with SROp::apply");
 }
 
 // --- D3a: CG on a synthetic SPD system ---------------------------------------------------
@@ -204,7 +210,7 @@ static void test_sr_real(cublasHandle_t h, ThreadPool& pool, std::vector<Workspa
     }
     // Host copies for the CPU reference -- the test's download, not production's.
     std::vector<double> O_h(Ns * P), E_h(Ns); std::vector<unsigned char> V_h(Ns);
-    ds.O_pool.down(O_h.data(), O_h.size()); ds.E_pool.down(E_h.data(), Ns); ds.valid_pool.down(V_h.data(), Ns);
+    O_h = opool_down(ds.O_pool, O_h.size()); ds.E_pool.down(E_h.data(), Ns); ds.valid_pool.down(V_h.data(), Ns);
     long long nv = 0; for (auto x : V_h) nv += x;
 
     // ---- CPU: compute_obs, RMS, SR_step ----

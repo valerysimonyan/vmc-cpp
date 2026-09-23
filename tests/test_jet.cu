@@ -5,6 +5,7 @@
 // seeds raw-coordinate jets and subtracts the CM through jet arithmetic. Every
 // other test here checks a piece in isolation.
 #include "../lib/gpu/arena.h"
+#include "../tests/test_tolerances.h"
 #include "../lib/gpu/jet_kernels.h"
 #include "../lib/gpu/net_forward.h"
 #include "../lib/physics.h"
@@ -211,9 +212,9 @@ static void test_jet_oracle(const Ansatz& a, cublasHandle_t handle) {
         }
     }
     std::printf("  jet oracle vs CPU jpsi: xi %.2e  rho %.2e  orb %.2e\n", wxi, wrho, worb);
-    CHECK(wxi  <= 1e-11, "jet xi disagrees with CPU ws.jxi");
-    CHECK(wrho <= 1e-11, "jet rho disagrees with CPU ws.jrho");
-    CHECK(worb <= 1e-11, "jet orb disagrees with CPU forward_opt<Jet>");
+    CHECK(wxi  <= tol::ff(1e-11, 1e-4), "jet xi disagrees with CPU ws.jxi");
+    CHECK(wrho <= tol::ff(1e-11, 5e-2), "jet rho disagrees with CPU ws.jrho");
+    CHECK(worb <= tol::ff(1e-11, 1e-4), "jet orb disagrees with CPU forward_opt<Jet>");
 }
 
 int main() {

@@ -142,3 +142,66 @@ void xi_reduce(const real* h_out, real* xi, int B, cudaStream_t stream) {
     xi_reduce_kernel<<<(unsigned)blocks, threads, 0, stream>>>(h_out, xi, B);
     cuda_sync_check("xi_reduce");
 }
+
+// Double to float
+__global__ void cast_d2f_kernel(const double* __restrict__ in, float* __restrict__ out, std::size_t n) {
+    std::size_t i = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = (float)in[i];
+}
+
+void cast_to_float(const double* in, float* out, std::size_t n, cudaStream_t stream) {
+    if (n == 0) return;
+    cast_d2f_kernel<<<(unsigned)((n + 255) / 256), 256, 0, stream>>>(in, out, n);
+    cuda_sync_check("cast_to_float");
+}
+
+// Float to Double
+__global__ void cast_f2d_kernel(const float* __restrict__ in, double* __restrict__ out, std::size_t n) {
+    std::size_t i = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = (double)in[i];
+}
+
+void cast_to_double(const float* in, double* out, std::size_t n, cudaStream_t stream) {
+    if (n == 0) return;
+    cast_f2d_kernel<<<(unsigned)((n + 255) / 256), 256, 0, stream>>>(in, out, n);
+    cuda_sync_check("cast_to_double");
+}
+
+// The same activations as dev_apply_activation, evaluated in float.
+__device__ __forceinline__ float dev_apply_activation_f(Activation act, float x) {
+    if (act == Activation::Tanh) return tanhf(x);
+    const float x3 = x*x*x;
+    const float inner = x + 0.044715f * x3;
+    const float th = tanhf(0.7978845608f * inner);
+    return 0.5f * x * (1.0f + th);
+}
+
+// Hidden layer: z <- act(z + b) in float
+__global__ void bias_act_f_kernel(float* __restrict__ z, double* __restrict__ z_keep, const float* __restrict__ bias, int rows, int width, Activation act) {
+    std::size_t idx = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (std::size_t)rows * width) return;
+    const float v = z[idx] + bias[(int)(idx % (std::size_t)width)];
+    if (z_keep) z_keep[idx] = (double)v;
+    z[idx] = dev_apply_activation_f(act, v);
+}
+void bias_act_f(float* z, double* z_keep, const float* bias, int rows, int width, Activation act, cudaStream_t stream) {
+    if (rows <= 0 || width <= 0) return;
+    const std::size_t total = (std::size_t)rows * width;
+    bias_act_f_kernel<<<(unsigned)((total + 255) / 256), 256, 0, stream>>>(z, z_keep, bias, rows, width, act);
+    cuda_sync_check("bias_act_f");
+}
+
+// Output layer: out = (double)(z + b). 
+__global__ void bias_out_f_kernel(const float* __restrict__ z, const float* __restrict__ bias, double* __restrict__ out, double* __restrict__ z_keep, int rows, int width) {
+    std::size_t idx = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (std::size_t)rows * width) return;
+    const double v = (double)(z[idx] + bias[(int)(idx % (std::size_t)width)]);
+    out[idx] = v;
+    if (z_keep) z_keep[idx] = v;
+}
+void bias_out_f(const float* z, const float* bias, double* out, double* z_keep, int rows, int width, cudaStream_t stream) {
+    if (rows <= 0 || width <= 0) return;
+    const std::size_t total = (std::size_t)rows * width;
+    bias_out_f_kernel<<<(unsigned)((total + 255) / 256), 256, 0, stream>>>(z, bias, out, z_keep, rows, width);
+    cuda_sync_check("bias_out_f");
+}

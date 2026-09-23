@@ -5,6 +5,7 @@
 // wrong in isolation -- the activation derivative and the cuBLAS orientation
 // plus O_pool placement of the weight gradients.
 #include "../lib/gpu/arena.h"
+#include "../tests/test_tolerances.h"
 #include "../lib/gpu/backprop.h"
 #include "../lib/gpu/local_e.h"
 #include "../lib/physics.h"
@@ -136,8 +137,7 @@ static void run_device_O(Dev& dv, cublasHandle_t h, const Ansatz& a, int B, int 
     Workspace ws;
     eval_local_E_device(dv.ds, h, a, ws, B, 0, /*stash_for_O=*/true);
     assemble_O_batch(dv.ds, h, 0, B, 0, chunk);
-    O.resize((std::size_t)B * dv.ds.P);
-    dv.ds.O_pool.down(O.data(), O.size());
+    O = opool_down(dv.ds.O_pool, (std::size_t)B * dv.ds.P);
     valid.resize(B);
     dv.ds.valid_loc.down(valid.data(), (std::size_t)B);
 }
@@ -308,14 +308,14 @@ static void test_full_O(const Ansatz& a, cublasHandle_t h) {
             const double scale = std::max(std::fabs(Os[k]), Omag[k]);
             if (ds_ > 0) worst_same = std::max(worst_same, ds_ / std::max(1e-300, scale));
             if (near && std::fabs(Os[k]) > 1e-14) worst_entry_near = std::max(worst_entry_near, ds_ / std::fabs(Os[k]));
-            if (!(ds_ <= 1e-12 * scale)) {
+            if (!(ds_ <= tol::fo(1e-12, 2e-7) * scale)) {   // float pool: one rounding per entry (6.3)
                 fail_same++;
                 if (k == P - 1) fs_alpha++; else if (k < n_h) fs_h++; else if (k < n_h + n_rho) fs_rho++; else fs_orb++;
             }
             // (b)
             const double de = std::fabs(got - Oc[k]);
             if (!(de <= 1e-10 * std::fabs(Oc[k]) || de <= 1e-14)) fail_e2e_strict++;
-            if (!(de <= 1e-10 * std::max(std::fabs(Oc[k]), rowmax))) fail_e2e++;
+            if (!(de <= tol::ffo(1e-10, 1e-2, 2e-7) * std::max(std::fabs(Oc[k]), rowmax))) fail_e2e++;
             if (k + 1 < P) {
                 double& wr = near ? worst_e2e_row_near : worst_e2e_row_far;
                 wr = std::max(wr, de / std::max(1e-300, rowmax));
@@ -331,7 +331,7 @@ static void test_full_O(const Ansatz& a, cublasHandle_t h) {
                 worst_e2e_row_near, worst_e2e_row_far, fail_e2e, fail_e2e_strict);
     CHECK(fail_same == 0, "device backprop disagrees with host fill_O given the same dets / Minv / S");
     CHECK(fail_e2e == 0, "device O disagrees with CPU local_E's O beyond the LU-gap bound");
-    CHECK(mask_mism == 0, "device and CPU validity differ on the O test configs");
+    CHECK(mask_mism <= tol::ff(0, n_cmp / 100 + 1), "device and CPU validity differ on the O test configs");
     CHECK(bad_invalid == 0, "an invalid sample's O_pool row is not zeroed");
     CHECK(n_cmp > B / 2 && n_near > 0, "too few valid (or near-node) samples compared");
 }
@@ -346,12 +346,12 @@ static void test_determinism_and_chunking(const Ansatz& a, cublasHandle_t h) {
 
     // D4: backprop again from the SAME stash -- no re-evaluation in between.
     assemble_O_batch(dv.ds, h, 0, B);
-    O2.resize(O1.size()); dv.ds.O_pool.down(O2.data(), O2.size());
+    O2 = opool_down(dv.ds.O_pool, O1.size());
 
     // D5: same stash, backprop in 37-walker chunks.
     dv.ds.O_pool.zero();
     assemble_O_batch(dv.ds, h, 0, B, 0, 37);
-    O3.resize(O1.size()); dv.ds.O_pool.down(O3.data(), O3.size());
+    O3 = opool_down(dv.ds.O_pool, O1.size());
 
     std::size_t d12 = 0, d13 = 0;
     for (std::size_t q = 0; q < O1.size(); q++) { if (O1[q] != O2[q]) d12++; if (O1[q] != O3[q]) d13++; }
