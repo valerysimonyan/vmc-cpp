@@ -184,8 +184,19 @@ static T psi_impl(const double* x, const double* s, const double* t, const Ansat
     // Envelope
     T r2{};
     for (int i = 0; i < D; i++) r2 = r2 + coord(i) * coord(i);
-    T r_env = sqrt(r2 + eps_env*eps_env);
-    return exp(envelope::log_factor(a.alpha, envelope::radius(r2))) * sum;
+    double xs[D];
+    for (int i = 0; i < D; i++) { 
+        if constexpr (is_jet) xs[i] = coord(i).v; 
+        else xs[i] = coord(i); 
+    }
+    if constexpr (is_jet) {
+        Jet Jj;
+        Jj.v = envelope::jastrow<double, double>(xs, s, t, a.jc.data(), Jj.g.data(), &Jj.l);
+        return exp(envelope::log_factor(a.alpha, envelope::radius(r2)) + Jj) * sum;
+    } else {
+        const double Jv = envelope::jastrow<double, double>(xs, s, t, a.jc.data(), nullptr, nullptr);
+        return exp(envelope::log_factor(a.alpha, envelope::radius(r2)) + Jv) * sum;
+    }
 }
 
 
@@ -416,7 +427,7 @@ double l2_local(const double* x_shifted, const double* grad, double psi_val) {
 
 }
 
-static void fill_O(const Ansatz& a, Workspace& ws, double S, std::vector<double>& O_out) {
+static void fill_O(const Ansatz& a, Workspace& ws, double S, std::vector<double>& O_out, const double* s, const double* t) {
     std::size_t n_h = a.h_net.params.size();
     std::size_t n_rho = a.rho_net.params.size();
     std::size_t n_orb = a.orb_net.params.size();
@@ -445,6 +456,11 @@ static void fill_O(const Ansatz& a, Workspace& ws, double S, std::vector<double>
     const double r_env = envelope::radius(envelope::r2(ws.x_sh.data()));
     O_out[n_h+n_rho+n_orb] = envelope::O_alpha(a.alpha, r_env);
 
+    double feat[n_jas_par + 1];
+    envelope::jastrow_O<double, double>(ws.x_sh.data(), s, t, feat);
+    for (int m = 0; m < n_jas_par; m++) O_out[n_h+n_rho+n_orb+1+m] = feat[m];
+
+
 }
 
 void assemble_O(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, std::vector<double>& O_out) {
@@ -457,7 +473,7 @@ void assemble_O(const double* x, const double* s, const double* t, const Ansatz&
     for (int i = 0; i < K; i++) {
         S += ws.drho[i] * ws.dets[i];
     }
-    fill_O(a, ws, S, O_out);
+    fill_O(a, ws, S, O_out, s, t);
 }
 
 // Log local energy and dlogpsi_d theta_i simultaneously as more computationally efficient
@@ -561,7 +577,22 @@ bool local_E(const double* x, const double* s, const double* t, const Ansatz& a,
                     R_s = swap_ratio(s_vec, t_vec, i, j, s[j], t[i], s[i], t[j], S0, use_rank2, a, ws);
                     R_st = swap_ratio(s_vec, t_vec, i, j, s[j], t[j], s[i], t[i], S0, use_rank2, a, ws);
                 }
-
+                // Channel-dependent Jastrow: exchange ratios pick up exp(dJ)
+                if (n_jas_cls > 1) {   
+                    double s1[N], t1[N];
+                    for (int q = 0; q < N; q++) { 
+                        s1[q] = s[q]; 
+                        t1[q] = t[q]; 
+                    }
+                    s1[i] = s[j]; s1[j] = s[i];
+                    const double dS = envelope::jastrow_dlabel<double, double>(x, s, t, s1, t, a.jc.data());
+                    t1[i] = t[j]; t1[j] = t[i];
+                    const double dST = envelope::jastrow_dlabel<double, double>(x, s, t, s1, t1, a.jc.data());
+                    const double dT = envelope::jastrow_dlabel<double, double>(x, s, t, s, t1, a.jc.data());
+                    R_s *= std::exp(dS); 
+                    R_t *= std::exp(dT); 
+                    R_st *= std::exp(dST);
+                }
                 V_nuc += (hbarc/4.0) * (C01*v01*(1.0 + R_t - R_s - R_st) + C10*v10*(1.0 - R_t + R_s - R_st));
             }
         }
@@ -572,7 +603,7 @@ bool local_E(const double* x, const double* s, const double* t, const Ansatz& a,
             return false;
         }
     }
-    fill_O(a, ws, S, O_out);
+    fill_O(a, ws, S, O_out, s, t);
 
     E_out = E_loc;
     return true;

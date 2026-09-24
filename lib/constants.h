@@ -82,9 +82,28 @@ inline constexpr double o_pool_max_gb = 12.0;  // Set cap of maximum amount of d
 inline constexpr int K = N*(dim+2)+1;  // Determinant count
 inline constexpr int m_feat = 2*N*(dim + 2)+1;  // Deepsets feature dimension
 
-// Envelope
-inline constexpr double eps_env = 0.7;   // fm -- envelope softening length, avoids the r=0 cusp in exp(-alpha*sqrt(r2+eps_env^2))
+//--- Envelope ---//
+// Simple envelope 
+inline constexpr double eps_env = R01;   // fm -- envelope softening length, avoids the r=0 cusp in exp(-alpha*sqrt(r2+eps_env^2))
 inline constexpr double beta_min = 0.1;  // fm^-1 -- envelope
+inline constexpr double alpha_init = 0.65; // initial envelope exponent: decay rate = beta_min + e^alpha_init
+
+// Jastrow factor
+inline constexpr int n_jas = 8;        // pair basis functions per pair class (<= 8), 0 disables the pair term
+inline constexpr int n_jas_cls = 4;    // 1: one set for all pairs; 4: per diagonal pair class (s_i s_j, t_i t_j)
+inline constexpr int n_j3 = 4;         // three-body terms shaped like the 3N force (<= 4), 0 disables
+inline constexpr double jas_R = 0.5 * (R10 + R01);   // pair basis widths scale with this range
+inline constexpr int n_jas_pair = n_jas * n_jas_cls;
+inline constexpr int n_jas_par = n_jas_pair + n_j3;  // all Jastrow parameters, stored after alpha
+
+// Separate Adam step for the envelope block (alpha, Jastrow) after each SR step; SR's shared
+// trust region leaves these few parameters nearly frozen. 0 disables.
+inline constexpr double env_adam_lr = 0.0;
+inline constexpr double env_adam_decay_it = 1000;   // lr_t = env_adam_lr / (1 + t / env_adam_decay_it)
+inline constexpr bool env_adam_alpha = false;       // false: Adam on the Jastrow only, alpha left to SR
+
+
+// -------------- //
 
 // Total Descent Parameters
 inline constexpr int N_descent = 10000;  // Total step count

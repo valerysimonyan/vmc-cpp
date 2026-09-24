@@ -36,10 +36,10 @@ void eval_jet_chunk(DeviceState& ds, cublasHandle_t handle, int Bc, int w_off, i
     { VMC_PROF("detjet", stream); det_jet_assemble(ds.jet_orb.d, ds.Minv_batch.d, ds.dets.d, ds.jet_det.d, Bc, w_off, B_tot, stream); }
     {
         VMC_PROF("compose", stream);
-        psi_jet_compose(ds.jet_rho.d, ds.jet_det.d, ds.x_sh.d, ds.params.d, ds.P, ds.jet_psi.d, ds.S_jet_v.d, Bc, w_off, B_tot, stream);
+        psi_jet_compose(ds.jet_rho.d, ds.jet_det.d, ds.x_sh.d, ds.s.d, ds.t.d, ds.params.d, ds.P, ds.jet_psi.d, ds.S_jet_v.d, Bc, w_off, B_tot, stream);
         kinetic_l2(ds.jet_psi.d, ds.x_sh.d, ds.E_kin.d, ds.l2_out.d, Bc, w_off, B_tot, stream);
         v3n_batch(ds.x.d, ds.v3n_out.d, Bc, w_off, stream);
-        validity_jet(ds.jet_psi.d, ds.S.d, ds.x_sh.d, ds.params.d, ds.P, ds.E_kin.d, ds.psi_dbl.d, ds.valid_jet.d, Bc, w_off, B_tot, stream);
+        validity_jet(ds.jet_psi.d, ds.S.d, ds.x_sh.d, ds.s.d, ds.t.d, ds.params.d, ds.P, ds.E_kin.d, ds.psi_dbl.d, ds.valid_jet.d, Bc, w_off, B_tot, stream);
     }
 }
 

@@ -115,10 +115,10 @@ static void test_fusions(const Ansatz& a, cublasHandle_t h) {
         }
         dets_from_lu(ds.M_batch.d, ds.lu_piv.d, ds.lu_info.d, ds.dets.d, B*K);
         S_combine(ds.rho_out.d, ds.dets.d, ds.S.d, B);
-        envelope_logp(ds.x_sh.d, ds.S.d, ds.params.d, ds.P, ds.logp.d, B);
+        envelope_logp(ds.x_sh.d, ds.s.d, ds.t.d, ds.S.d, ds.params.d, ds.P, ds.logp.d, B);
         auto S0 = dl(ds.S, B); auto lp0 = dl(ds.logp, B);
         ds.S.zero(); ds.logp.zero();
-        combine_envelope(ds.rho_out.d, ds.dets.d, ds.S.d, ds.x_sh.d, ds.params.d, ds.P, ds.logp.d, B);
+        combine_envelope(ds.rho_out.d, ds.dets.d, ds.S.d, ds.x_sh.d, ds.s.d, ds.t.d, ds.params.d, ds.P, ds.logp.d, B);
         auto S1 = dl(ds.S, B); auto lp1 = dl(ds.logp, B);
         std::size_t n_ninf = 0;
         for (real v : lp0) if (v == -INFINITY) n_ninf++;

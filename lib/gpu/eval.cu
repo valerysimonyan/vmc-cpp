@@ -80,7 +80,7 @@ static void eval_chain(DeviceState& ds, cublasHandle_t handle, int B, const real
     }
     { VMC_PROF("assemble", stream); assemble_M(ds.orb_out.d, ds.M_batch.d, B, stream); }
     { VMC_PROF("lu",       stream); batched_det(handle, B*K, ds.M_batch.d, ds.lu_ptrs.d, ds.lu_piv.d, ds.lu_info.d, ds.dets.d, stream); }
-    { VMC_PROF("combine_envelope", stream); combine_envelope(ds.rho_out.d, ds.dets.d, S_dst, ds.x_sh.d, ds.params.d, ds.P, logp_dst, B, stream); }
+    { VMC_PROF("combine_envelope", stream); combine_envelope(ds.rho_out.d, ds.dets.d, S_dst, ds.x_sh.d, ds.s.d, ds.t.d, ds.params.d, ds.P, logp_dst, B, stream); }
 }
 
 void eval_logp_batch_prop(DeviceState& ds, cublasHandle_t handle, int B, const real* x_prop, real* S_prop, real* logp_prop, cudaStream_t stream, bool stash) {

@@ -78,6 +78,18 @@ int read_network_partial(std::istream& f, const char* name, Network& net, const 
 
 }
 
+// Read Jastrow parameters
+static void read_jastrow(std::ifstream& f, Ansatz& a) {
+    std::string tag; int n = 0;
+    if (!(f >> tag) || tag != "jastrow") return;
+    f >> n;
+    for (int m = 0; m < n; m++) { 
+        double c; 
+        f >> c; 
+        if (m < n_jas_par) a.jc[m] = c; 
+    }
+}
+
 // Save parameters to file for full psi
 void save_checkpoint(const std::string& path, const Ansatz& a) {
     std::ofstream f(path);
@@ -89,6 +101,11 @@ void save_checkpoint(const std::string& path, const Ansatz& a) {
     write_network(f, "orb_net", a.orb_net);
     
     f << std::setprecision(17) << "alpha " << a.alpha << "\n";
+
+    f << "jastrow " << n_jas_par;
+    for (int m = 0; m < n_jas_par; m++) f << " " << a.jc[m];
+    f << "\n";
+
 }
 
 // Load parameters to file for full psi
@@ -106,6 +123,7 @@ void load_checkpoint(const std::string& path, Ansatz& a) {
     std::string tag;
     f >> tag >> a.alpha;
     if (tag != "alpha") throw std::runtime_error("load_checkpoint(" + path + "): expected 'alpha', found '" + tag + "'");
+    read_jastrow(f, a);
 }
 
 // Load transfer code
@@ -129,4 +147,5 @@ void load_transfer(const std::string& path, Ansatz& a) {
     std::string tag;
     f >> tag >> a.alpha;
     if (tag != "alpha") throw std::runtime_error("load_transfer(" + path + "): expected 'alpha', found '" + tag + "'");
+    read_jastrow(f, a);
 }

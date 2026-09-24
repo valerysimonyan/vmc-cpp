@@ -1,5 +1,6 @@
 #include "sampler_kernels.h"
 #include "philox.h"
+#include "../envelope.h"
 
 #include <cmath>
 #include <vector>
@@ -122,12 +123,19 @@ __device__ __forceinline__ double dev_logp_from_S_ratio(double logp_cur, double 
     return logp_cur + log(fabs(S_new)) - log(fabs(S_cur));
 }
 
-__global__ void accept_discrete_kernel(real* __restrict__ cur, const real* __restrict__ prop, real* __restrict__ S_cur, const real* __restrict__ S_prop, real* __restrict__ logp, long long* __restrict__ counter, unsigned long long* __restrict__ rng_ctr, unsigned long long seed, int B) {
+__global__ void accept_discrete_kernel(real* __restrict__ cur, const real* __restrict__ prop, const real* __restrict__ other, bool is_spin, const real* __restrict__ x, const real* __restrict__ jc, real* __restrict__ S_cur, const real* __restrict__ S_prop, real* __restrict__ logp, long long* __restrict__ counter, unsigned long long* __restrict__ rng_ctr, unsigned long long seed, int B) {
     int w = blockIdx.x * blockDim.x + threadIdx.x;
     if (w >= B) return;
 
     const double lo = (double)logp[w];
-    const double ln = dev_logp_from_S_ratio(lo, (double)S_cur[w], (double)S_prop[w]);
+    double ln = dev_logp_from_S_ratio(lo, (double)S_cur[w], (double)S_prop[w]);
+    if (n_jas_cls > 1 && isfinite(lo)) {  
+        const real* cw = cur + (std::size_t)w * N; const real* pw = prop + (std::size_t)w * N; const real* ow = other + (std::size_t)w * N;
+        const real* xw = x + (std::size_t)w * D;
+        ln += (double)(is_spin ? envelope::jastrow_dlabel<real, real>(xw, cw, ow, pw, ow, jc)
+                               : envelope::jastrow_dlabel<real, real>(xw, ow, cw, ow, pw, jc));
+    }
+
 
     PhiloxStream st = stream_for(seed, w, rng_ctr[w]);
     const bool ok = dev_metro_accept(st, lo, ln);  
@@ -146,7 +154,7 @@ __global__ void accept_discrete_kernel(real* __restrict__ cur, const real* __res
 void accept_discrete(DeviceState& ds, int B, bool is_spin, cudaStream_t stream) {
     if (B <= 0) return;
     const int threads = 256;
-    accept_discrete_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(is_spin ? ds.s.d : ds.t.d, is_spin ? ds.s_prop.d : ds.t_prop.d, ds.S_cur.d, ds.S_prop.d, ds.logp.d, is_spin ? ds.sp_acc.d : ds.tau_acc.d, ds.rng_ctr.d, rng_seed, B);
+    accept_discrete_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(is_spin ? ds.s.d : ds.t.d, is_spin ? ds.s_prop.d : ds.t_prop.d, is_spin ? ds.t.d : ds.s.d, is_spin, ds.x.d, ds.params.d + (ds.P - envelope::n_params_env) + 1, ds.S_cur.d, ds.S_prop.d, ds.logp.d, is_spin ? ds.sp_acc.d : ds.tau_acc.d, ds.rng_ctr.d, rng_seed, B);
     cuda_sync_check("accept_discrete");
 }
 

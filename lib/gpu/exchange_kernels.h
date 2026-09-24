@@ -47,5 +47,5 @@ void ex_S_swap(const real* rho_swap, const real* dets_psi, const real* Minv_batc
 int ex_fallback_host(DeviceState& ds, const Ansatz& a, Workspace& ws, int B);
 
 void coulomb_batch(const real* x, const real* t, real* V_coul, int B, cudaStream_t stream = 0);
-void ex_assemble(const real* x, const real* s, const real* t, const int* pair_ij, const real* S_swap, const real* S0, const real* E_kin, const real* v3n, const real* V_coul, const unsigned char* valid_jet, real* V_nuc, real* E_loc, unsigned char* valid_loc, int B, cudaStream_t stream = 0);
+void ex_assemble(const real* x, const real* s, const real* t, const int* pair_ij, const real* S_swap, const real* S0, const real* E_kin, const real* v3n, const real* V_coul, const unsigned char* valid_jet, real* V_nuc, real* E_loc, unsigned char* valid_loc, int B, const real* params, std::size_t P, cudaStream_t stream = 0);
 void pool_write_row(const real* E_loc, const unsigned char* valid_loc, double* E_pool, unsigned char* valid_pool, int r, int B, cudaStream_t stream = 0);

@@ -5,6 +5,7 @@
 // wrong in isolation -- the activation derivative and the cuBLAS orientation
 // plus O_pool placement of the weight gradients.
 #include "../lib/gpu/arena.h"
+#include "../lib/envelope.h"
 #include "../tests/test_tolerances.h"
 #include "../lib/gpu/backprop.h"
 #include "../lib/gpu/local_e.h"
@@ -198,7 +199,7 @@ static void stash_row_to_cache(const Network& net, const HostStash& hs, std::siz
 // forward passes' xi (the device's centre-of-mass subtraction and sums round
 // differently), not anything in the backprop.
 static void cpu_O_with_device_inputs(const Ansatz& a, Workspace& ws, const real* rho, const real* dets, const real* Minv, double S,
-                                     std::vector<double>& O, std::vector<double>& mag) {
+                                     std::vector<double>& O, std::vector<double>& mag, const double* sl, const double* tl) {
     const std::size_t n_h = a.h_net.params.size(), n_rho = a.rho_net.params.size(), n_orb = a.orb_net.params.size();
     const std::size_t P = a.n_params();
     O.assign(P, 0.0); mag.assign(P, 0.0);
@@ -232,13 +233,17 @@ static void cpu_O_with_device_inputs(const Ansatz& a, Workspace& ws, const real*
 
     double r2 = 0.0;
     for (int i = 0; i < D; i++) { double c = ws.x_sh[i]; r2 += c * c; }
-    O[P - 1] = -std::exp(a.alpha) * std::sqrt(r2 + eps_env * eps_env);
+    const std::size_t PA = P - envelope::n_params_env;
+    O[PA] = -std::exp(a.alpha) * std::sqrt(r2 + eps_env * eps_env);
+    double feat[n_jas_par + 1];
+    envelope::jastrow_O<double, double>(ws.x_sh.data(), sl, tl, feat);
+    for (int m = 0; m < n_jas_par; m++) O[PA + 1 + m] = feat[m];
 
     const double aS = std::fabs(S);
     for (std::size_t p = 0; p < n_h; p++)   mag[p] = m_h[p] / aS;
     for (std::size_t p = 0; p < n_rho; p++) mag[n_h + p] = m_rho[p] / aS;
     for (std::size_t p = 0; p < n_orb; p++) mag[n_h + n_rho + p] = m_orb[p] / aS;
-    mag[P - 1] = std::fabs(O[P - 1]);
+    for (std::size_t p = PA; p < P; p++) mag[p] = std::fabs(O[p]);
 }
 
 // D3, in two parts.
@@ -298,7 +303,7 @@ static void test_full_O(const Ansatz& a, cublasHandle_t h) {
         }
         ws.drho.resize(K); for (int k = 0; k < K; k++) ws.drho[k] = (double)Rh[(std::size_t)w*K + k];
         ws.x_sh.resize(D); for (int q = 0; q < D; q++) ws.x_sh[q] = (double)Xs[(std::size_t)w*D + q];
-        cpu_O_with_device_inputs(a, ws, &Rh[(std::size_t)w*K], &De[(std::size_t)w*K], &Mi[(std::size_t)w*K*N*N], (double)Sd[w], Os, Omag);
+        cpu_O_with_device_inputs(a, ws, &Rh[(std::size_t)w*K], &De[(std::size_t)w*K], &Mi[(std::size_t)w*K*N*N], (double)Sd[w], Os, Omag, sw, tw);
 
         double rowmax = 0; for (std::size_t k = 0; k + 1 < P; k++) rowmax = std::max(rowmax, std::fabs(Oc[k]));
         for (std::size_t k = 0; k < P; k++) {
@@ -310,7 +315,7 @@ static void test_full_O(const Ansatz& a, cublasHandle_t h) {
             if (near && std::fabs(Os[k]) > 1e-14) worst_entry_near = std::max(worst_entry_near, ds_ / std::fabs(Os[k]));
             if (!(ds_ <= tol::fo(1e-12, 2e-7) * scale)) {   // float pool: one rounding per entry (6.3)
                 fail_same++;
-                if (k == P - 1) fs_alpha++; else if (k < n_h) fs_h++; else if (k < n_h + n_rho) fs_rho++; else fs_orb++;
+                if (k >= P - envelope::n_params_env) fs_alpha++; else if (k < n_h) fs_h++; else if (k < n_h + n_rho) fs_rho++; else fs_orb++;
             }
             // (b)
             const double de = std::fabs(got - Oc[k]);

@@ -165,7 +165,7 @@ __global__ void orb_seed_kernel(const real* __restrict__ rho, const real* __rest
 }
 
 // Fill O's
-__global__ void o_finalize_kernel(const double* __restrict__ src, opool_t* __restrict__ dst, const unsigned char* __restrict__ valid, const real* __restrict__ S, const real* __restrict__ x_sh, real alpha, std::size_t P, int Bc, int w_off) {
+__global__ void o_finalize_kernel(const double* __restrict__ src, opool_t* __restrict__ dst, const unsigned char* __restrict__ valid, const real* __restrict__ S, const real* __restrict__ x_sh, const real* __restrict__ s, const real* __restrict__ t, real alpha, std::size_t P, int Bc, int w_off) {
     const int wl = blockIdx.x;
     if (wl >= Bc) return;
     const std::size_t w = (std::size_t)w_off + wl;
@@ -177,11 +177,15 @@ __global__ void o_finalize_kernel(const double* __restrict__ src, opool_t* __res
         return;
     }
     const real Sw = S[w];
-    for (std::size_t k = threadIdx.x; k < P - 1; k += blockDim.x) row[k] = (opool_t)(in[k] / Sw);
+    const std::size_t P_net = P - envelope::n_params_env;
+    for (std::size_t k = threadIdx.x; k < P_net; k += blockDim.x) row[k] = (opool_t)(in[k] / Sw);
 
     if (threadIdx.x == 0) {
         const real r_env = envelope::radius(envelope::r2(x_sh + w * D));
-        row[P - 1] = (opool_t)envelope::O_alpha(alpha, r_env);
+        row[P_net] = (opool_t)envelope::O_alpha(alpha, r_env);
+        real feat[n_jas_par + 1];
+        envelope::jastrow_O<real, real>(x_sh + w * D, s + w * N, t + w * N, feat);
+        for (int m = 0; m < n_jas_par; m++) row[P_net + 1 + m] = (opool_t)feat[m];
     }
 }
 
@@ -205,7 +209,7 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
     real alpha;
     {
         VMC_PROF_HOST("/transfers/alpha_dn");
-        CUDA_CHECK(cudaMemcpyAsync(&alpha, ds.params.d + (P - 1), sizeof(real), cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaMemcpyAsync(&alpha, ds.params.d + (P - envelope::n_params_env), sizeof(real), cudaMemcpyDeviceToHost, stream));
         xfer_note_dn(sizeof(real));
         CUDA_CHECK(cudaStreamSynchronize(stream));
     }
@@ -242,7 +246,7 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
         backprop_net(handle, ds.orb_net_d, ds.cache_orb, ds.params.d, ds.bp_a.d, ds.bp_b.d, ds.bp_wt.d, N, Bc, w_off, O_first, P, nullptr, stream);
 
         { VMC_PROF("o_finalize", stream);
-          o_finalize_kernel<<<(unsigned)Bc, 128, 0, stream>>>(O_first, O_dst, ds.valid_loc.d, ds.S.d, ds.x_sh.d, alpha, P, Bc, w_off);
+          o_finalize_kernel<<<(unsigned)Bc, 128, 0, stream>>>(O_first, O_dst, ds.valid_loc.d, ds.S.d, ds.x_sh.d, ds.s.d, ds.t.d, alpha, P, Bc, w_off);
           cuda_sync_check("o_finalize"); }
     }
 }

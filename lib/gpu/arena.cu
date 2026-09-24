@@ -165,8 +165,8 @@ void DeviceState::grow_phase5(const Ansatz& a, bool verbose) {
     check_backprop_layout(a, h_net_d,   a.h_net,   0,            "h_net");
     check_backprop_layout(a, rho_net_d, a.rho_net, n_h,          "rho_net");
     check_backprop_layout(a, orb_net_d, a.orb_net, n_h + n_rho,  "orb_net");
-    if (n_h + n_rho + n_orb + 1 != P)
-        throw std::runtime_error("grow_phase5: P is not h + rho + orb + alpha; the O_alpha slot would be wrong");
+    if (n_h + n_rho + n_orb + 1 + n_jas_par != P)
+        throw std::runtime_error("grow_phase5: P is not h + rho + orb + alpha + jastrow; the envelope O slots would be wrong");
 
     const std::size_t rows = B * (std::size_t)N;
     cache_h.alloc(h_net_d, rows);

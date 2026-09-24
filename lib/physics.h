@@ -3,6 +3,7 @@
 #include <vector>
 #include <cmath>
 #include <cstring>
+#include <array>
 
 #include "network.h"
 #include "constants.h"
@@ -13,17 +14,18 @@ struct Ansatz {
     Network rho_net;  // m_feat -> K
     Network orb_net;  // dim -> K*N
     double alpha;     // Envelope exponent
+    std::array<double, n_jas_par> jc{};   // Jastrow coefficients, after alpha in the flat layout
 
     // Initialize networks
     Ansatz(std::vector<int> h_hidden, std::vector<int> rho_hidden, std::vector<int> orb_hidden, Activation act)
         : h_net(dim+1+1, h_hidden, m_feat, act),
           rho_net(m_feat, rho_hidden, K, act),
           orb_net(dim+1+1, orb_hidden, K * N, act),
-          alpha(0.65) {}
+          alpha(alpha_init) {}
 
     // Return total parameter count 
     std::size_t n_params() const {
-        return h_net.params.size() + rho_net.params.size() + orb_net.params.size() + 1;
+        return h_net.params.size() + rho_net.params.size() + orb_net.params.size() + 1 + n_jas_par;
     }
 
     // Extract specific parameter
@@ -36,7 +38,9 @@ struct Ansatz {
         if (k < nr) return rho_net.params[k];
         k -= nr;
         if (k < no) return orb_net.params[k];
-        return alpha;
+        k -= no;
+        if (k == 0) return alpha;
+        return jc[k - 1];    
     }
 
     // Copy parameters
@@ -49,6 +53,7 @@ struct Ansatz {
         std::memcpy(dst + off, orb_net.params.data(), orb_net.params.size() * sizeof(double));
         off += orb_net.params.size();
         dst[off] = alpha;
+        for (int m = 0; m < n_jas_par; m++) dst[off + 1 + m] = jc[m];
     }
 
     // Add to specific parameter
@@ -61,7 +66,9 @@ struct Ansatz {
         if (k < nr) { rho_net.params[k] += delta; return; }
         k -= nr;
         if (k < no) { orb_net.params[k] += delta; return; }
-        alpha += delta;
+        k -= no;
+        if (k == 0) { alpha += delta; return; }
+        jc[k - 1] += delta;
     }
 };
 

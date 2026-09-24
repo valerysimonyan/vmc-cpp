@@ -58,6 +58,6 @@ int eval_local_E_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a,
 
     VMC_PROF("assemble", stream);
     coulomb_batch(ds.x.d, ds.t.d, ds.V_coul.d, B, stream);
-    ex_assemble(ds.x.d, ds.s.d, ds.t.d, ds.pair_ij.d, ds.S_swap.d, ds.S0.d, ds.E_kin.d, ds.v3n_out.d, ds.V_coul.d, ds.valid_jet.d, ds.V_nuc.d, ds.E_loc.d, ds.valid_loc.d, B, stream);
+    ex_assemble(ds.x.d, ds.s.d, ds.t.d, ds.pair_ij.d, ds.S_swap.d, ds.S0.d, ds.E_kin.d, ds.v3n_out.d, ds.V_coul.d, ds.valid_jet.d, ds.V_nuc.d, ds.E_loc.d, ds.valid_loc.d, B, ds.params.d, ds.P, stream);
     return n_fallback;
 }

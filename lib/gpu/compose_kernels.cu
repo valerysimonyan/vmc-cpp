@@ -17,7 +17,7 @@ __device__ __forceinline__ void seed_coord_jet(DJet& o, const real* x_sh_w, int 
 }
 
 // Compose Jet Psi
-__global__ void psi_jet_compose_kernel(const real* __restrict__ J_rho, const real* __restrict__ J_det, const real* __restrict__ x_sh, real alpha, real* __restrict__ J_psi, real* __restrict__ S_jet_v, int Bc, int w_off, int B_tot) {
+__global__ void psi_jet_compose_kernel(const real* __restrict__ J_rho, const real* __restrict__ J_det, const real* __restrict__ x_sh, const real* __restrict__ s, const real* __restrict__ t, real alpha, const real* __restrict__ jc, real* __restrict__ J_psi, real* __restrict__ S_jet_v, int Bc, int w_off, int B_tot) {
     const int w = blockIdx.x * blockDim.x + threadIdx.x;
     if (w >= Bc) return;
 
@@ -59,6 +59,9 @@ __global__ void psi_jet_compose_kernel(const real* __restrict__ J_rho, const rea
     DJet beta; djet_const(beta, envelope::rate(alpha));
     DJet negb; djet_scale(negb, beta, (real)-1);
     DJet arg;  djet_mul(arg, negb, r_env);
+    DJet Jj;   Jj.v = envelope::jastrow<real, real>(xw, s + gw * N, t + gw * N, jc, Jj.g, &Jj.l);
+    djet_add(arg, arg, Jj);
+
     DJet env;  djet_exp(env, arg);
 
     DJet pj; djet_mul(pj, env, S);
@@ -69,14 +72,14 @@ __global__ void psi_jet_compose_kernel(const real* __restrict__ J_rho, const rea
     J_psi[(std::size_t)(jet_C - 1)*p_stride + off] = pj.l;
 }
 
-void psi_jet_compose(const real* J_rho, const real* J_det, const real* x_sh, const real* params, std::size_t P, real* J_psi, real* S_jet_v, int Bc, int w_off, int B_tot, cudaStream_t stream) {
+void psi_jet_compose(const real* J_rho, const real* J_det, const real* x_sh, const real* s, const real* t, const real* params, std::size_t P, real* J_psi, real* S_jet_v, int Bc, int w_off, int B_tot, cudaStream_t stream) {
     if (Bc <= 0) return;
     real alpha_h;
-    CUDA_CHECK(cudaMemcpyAsync(&alpha_h, params + (P - 1), sizeof(real), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaMemcpyAsync(&alpha_h, params + (P - envelope::n_params_env), sizeof(real), cudaMemcpyDeviceToHost, stream));
     xfer_note_dn(sizeof(real));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     const int threads = 128;
-    psi_jet_compose_kernel<<<(Bc + threads - 1)/threads, threads, 0, stream>>>(J_rho, J_det, x_sh, alpha_h, J_psi, S_jet_v, Bc, w_off, B_tot);
+    psi_jet_compose_kernel<<<(Bc + threads - 1)/threads, threads, 0, stream>>>(J_rho, J_det, x_sh, s, t, alpha_h, params + (P - envelope::n_params_env) + 1, J_psi, S_jet_v, Bc, w_off, B_tot);
     cuda_sync_check("psi_jet_compose");
 }
 
@@ -154,7 +157,7 @@ void v3n_batch(const real* x, real* v3n, int Bc, int w_off, cudaStream_t stream)
 }
 
 // Assemble wave function and check if it works
-__global__ void validity_jet_kernel(const real* __restrict__ J_psi, const real* __restrict__ S, const real* __restrict__ x_sh, real alpha, const real* __restrict__ E_kin, real* __restrict__ psi_dbl, unsigned char* __restrict__ valid, int Bc, int w_off, int B_tot) {
+__global__ void validity_jet_kernel(const real* __restrict__ J_psi, const real* __restrict__ S, const real* __restrict__ x_sh, const real* __restrict__ s, const real* __restrict__ t, real alpha, const real* __restrict__ jc, const real* __restrict__ E_kin, real* __restrict__ psi_dbl, unsigned char* __restrict__ valid, int Bc, int w_off, int B_tot) {
     const int w = blockIdx.x * blockDim.x + threadIdx.x;
     if (w >= Bc) return;
 
@@ -163,7 +166,7 @@ __global__ void validity_jet_kernel(const real* __restrict__ J_psi, const real* 
 
     // psi_double = psi_impl<double>'s last line: exp(-(beta_min+exp(alpha))*r_env) * S
     const real r_env = envelope::radius(envelope::r2(x_sh + gw * D));
-    const real pd = exp(envelope::log_factor(alpha, r_env)) * Sv;
+    const real pd = exp(envelope::log_factor(alpha, r_env) + envelope::jastrow<real, real>(x_sh + gw * D, s + gw * N, t + gw * N, jc, nullptr, nullptr)) * Sv;
     psi_dbl[gw] = pd;
 
     if (!isfinite(Sv) || fabs(Sv) < (real)1e-290) { valid[gw] = 0; return; }
@@ -177,13 +180,13 @@ __global__ void validity_jet_kernel(const real* __restrict__ J_psi, const real* 
     valid[gw] = 1;
 }
 
-void validity_jet(const real* J_psi, const real* S, const real* x_sh, const real* params, std::size_t P, const real* E_kin, real* psi_dbl, unsigned char* valid, int Bc, int w_off, int B_tot, cudaStream_t stream) {
+void validity_jet(const real* J_psi, const real* S, const real* x_sh, const real* s, const real* t, const real* params, std::size_t P, const real* E_kin, real* psi_dbl, unsigned char* valid, int Bc, int w_off, int B_tot, cudaStream_t stream) {
     if (Bc <= 0) return;
     real alpha_h;
-    CUDA_CHECK(cudaMemcpyAsync(&alpha_h, params + (P - 1), sizeof(real), cudaMemcpyDeviceToHost, stream));
+    CUDA_CHECK(cudaMemcpyAsync(&alpha_h, params + (P - envelope::n_params_env), sizeof(real), cudaMemcpyDeviceToHost, stream));
     xfer_note_dn(sizeof(real));
     CUDA_CHECK(cudaStreamSynchronize(stream));
     const int threads = 128;
-    validity_jet_kernel<<<(Bc + threads - 1)/threads, threads, 0, stream>>>(J_psi, S, x_sh, alpha_h, E_kin, psi_dbl, valid, Bc, w_off, B_tot);
+    validity_jet_kernel<<<(Bc + threads - 1)/threads, threads, 0, stream>>>(J_psi, S, x_sh, s, t, alpha_h, params + (P - envelope::n_params_env) + 1, E_kin, psi_dbl, valid, Bc, w_off, B_tot);
     cuda_sync_check("validity_jet");
 }

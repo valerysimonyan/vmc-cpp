@@ -216,14 +216,16 @@ static void test_params_flat(const Ansatz& a) {
     // alpha or swapped two networks would be caught even if get_param moved with it.
     const std::size_t n_h = a.h_net.params.size(), n_rho = a.rho_net.params.size(),
                       n_orb = a.orb_net.params.size();
-    CHECK(n_h + n_rho + n_orb + 1 == P, "network sizes do not sum to n_params");
+    CHECK(n_h + n_rho + n_orb + 1 + n_jas_par == P, "network sizes do not sum to n_params");
     for (std::size_t i = 0; i < n_h; i++)
         CHECK(real_roundtrip_ok(back[i], a.h_net.params[i]), "flat layout: h_net block wrong");
     for (std::size_t i = 0; i < n_rho; i++)
         CHECK(real_roundtrip_ok(back[n_h + i], a.rho_net.params[i]), "flat layout: rho_net block wrong");
     for (std::size_t i = 0; i < n_orb; i++)
         CHECK(real_roundtrip_ok(back[n_h + n_rho + i], a.orb_net.params[i]), "flat layout: orb_net block wrong");
-    CHECK(real_roundtrip_ok(back[P-1], a.alpha), "flat layout: alpha must be the trailing scalar");
+    CHECK(real_roundtrip_ok(back[n_h + n_rho + n_orb], a.alpha), "flat layout: alpha must follow the networks");
+    for (int m = 0; m < n_jas_par; m++)
+        CHECK(real_roundtrip_ok(back[n_h + n_rho + n_orb + 1 + m], a.jc[m]), "flat layout: Jastrow block wrong");
 }
 
 // --- 5. Philox: device output must equal the host stream, bit for bit -------
@@ -670,7 +672,7 @@ static void test_logpsi_nodes(const Ansatz& a, cublasHandle_t handle) {
     // The exact -INFINITY branch, tested directly: inject S = 0.
     DeviceArray<real> zeroS;
     zeroS.alloc(B); zeroS.zero();
-    envelope_logp(ds.x_sh.d, zeroS.d, ds.params.d, ds.P, ds.logp.d, B);
+    envelope_logp(ds.x_sh.d, ds.s.d, ds.t.d, zeroS.d, ds.params.d, ds.P, ds.logp.d, B);
     std::vector<real> g2(B); ds.logp.down(g2.data(), B);
     int not_inf = 0;
     for (int w = 0; w < B; w++)

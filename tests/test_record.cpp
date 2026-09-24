@@ -1,4 +1,5 @@
 #include "../lib/walkers.h"
+#include "../lib/envelope.h"
 #include "../lib/physics.h"
 #include "../lib/constants.h"
 #include "../lib/network.h"
@@ -99,6 +100,7 @@ static double legacy_local_E(const std::vector<double>& x, const std::vector<dou
     double r2 = 0.0;
     for (int i = 0; i < D; i++) { double c = ws.x_sh[i]; r2 += c*c; }
     O_out[n_h+n_rho+n_orb] = -std::exp(a.alpha) * std::sqrt(r2 + eps_env*eps_env);
+    { double feat[n_jas_par + 1]; envelope::jastrow_O<double, double>(ws.x_sh.data(), s.data(), t.data(), feat); for (int m = 0; m < n_jas_par; m++) O_out[n_h+n_rho+n_orb+1+m] = feat[m]; }
     return E_loc;
 }
 

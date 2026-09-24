@@ -302,7 +302,7 @@ static void test_validity_guards(const Ansatz& a, cublasHandle_t h) {
     dv.ds.jet_psi.up(Jp2.data(), Jp2.size());
     dv.ds.E_kin.up(Ek2.data(), Ek2.size());
 
-    validity_jet(dv.ds.jet_psi.d, dv.ds.S.d, dv.ds.x_sh.d, dv.ds.params.d, dv.ds.P,
+    validity_jet(dv.ds.jet_psi.d, dv.ds.S.d, dv.ds.x_sh.d, dv.ds.s.d, dv.ds.t.d, dv.ds.params.d, dv.ds.P,
                  dv.ds.E_kin.d, dv.ds.psi_dbl.d, dv.ds.valid_jet.d, B, 0, B);
 
     std::vector<uint8_t> got(dv.ds.valid_jet.n);

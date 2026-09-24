@@ -182,7 +182,7 @@ static void test_exchange(const Ansatz& a, cublasHandle_t h) {
               dv.ds.pair_ij.d, dv.ds.ex_active.d, dv.ds.rank2_ok.d, dv.ds.S_swap.d, B, 0);
     const int nf = ex_fallback_host(dv.ds, a, ws_dev, B);
     ex_assemble(dv.ds.x.d, dv.ds.s.d, dv.ds.t.d, dv.ds.pair_ij.d, dv.ds.S_swap.d, dv.ds.S0.d, dv.ds.E_kin.d, dv.ds.v3n_out.d,
-                dv.ds.V_coul.d, dv.ds.valid_jet.d, dv.ds.V_nuc.d, dv.ds.E_loc.d, dv.ds.valid_loc.d, B);
+                dv.ds.V_coul.d, dv.ds.valid_jet.d, dv.ds.V_nuc.d, dv.ds.E_loc.d, dv.ds.valid_loc.d, B, dv.ds.params.d, dv.ds.P);
     dv.ds.V_nuc.down(Vn.data(), (std::size_t)B);
     double worst_fb = 0, worst_kept = 0;  // relative to summand magnitude
     for (int w = 0; w < B; w++) {

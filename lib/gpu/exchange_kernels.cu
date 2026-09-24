@@ -1,5 +1,6 @@
 #include "exchange_kernels.h"
 #include "arena.h"
+#include "../envelope.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -219,7 +220,7 @@ void coulomb_batch(const real* x, const real* t, real* V_coul, int B, cudaStream
 }
 
 // Combine everything into E_loc
-__global__ void ex_assemble_kernel(const real* __restrict__ x, const real* __restrict__ s, const real* __restrict__ t, const int* __restrict__ pair_ij, const real* __restrict__ S_swap, const real* __restrict__ S0, const real* __restrict__ E_kin, const real* __restrict__ v3n, const real* __restrict__ V_coul, const unsigned char* __restrict__ valid_jet, real* __restrict__ V_nuc_out, real* __restrict__ E_loc, unsigned char* __restrict__ valid_loc, real pi15, int B) {
+__global__ void ex_assemble_kernel(const real* __restrict__ x, const real* __restrict__ s, const real* __restrict__ t, const int* __restrict__ pair_ij, const real* __restrict__ S_swap, const real* __restrict__ S0, const real* __restrict__ E_kin, const real* __restrict__ v3n, const real* __restrict__ V_coul, const unsigned char* __restrict__ valid_jet, real* __restrict__ V_nuc_out, real* __restrict__ E_loc, unsigned char* __restrict__ valid_loc, real pi15, const real* __restrict__ jc, int B) {
     const int w = blockIdx.x * blockDim.x + threadIdx.x;
     if (w >= B) return;
     const std::size_t per_w = (std::size_t)ex_types * ex_npairs;
@@ -263,6 +264,19 @@ __global__ void ex_assemble_kernel(const real* __restrict__ x, const real* __res
                 R_s  = S_swap[base + EX_S]  / S0w;
                 R_st = S_swap[base + EX_ST] / S0w;
             }
+
+            if (n_jas_cls > 1) {   // channel-dependent Jastrow: exchange ratios pick up exp(dJ)
+                real s1[N], t1[N];
+                for (int q = 0; q < N; q++) { s1[q] = sw[q]; t1[q] = tw[q]; }
+                const real si = sw[i], sj = sw[j], ti = tw[i], tj = tw[j];
+                s1[i] = sj; s1[j] = si;   // spin exchange
+                const real dS = envelope::jastrow_dlabel<real, real>(xw, sw, tw, s1, tw, jc);
+                t1[i] = tj; t1[j] = ti;   // spin + isospin exchange
+                const real dST = envelope::jastrow_dlabel<real, real>(xw, sw, tw, s1, t1, jc);
+                const real dT = envelope::jastrow_dlabel<real, real>(xw, sw, tw, sw, t1, jc);
+                R_s *= exp(dS); R_t *= exp(dT); R_st *= exp(dST);
+            }
+
             V_nuc += (real)(hbarc/4.0) * ((real)C01*v01*((real)1.0 + R_t - R_s - R_st) + (real)C10*v10*((real)1.0 - R_t + R_s - R_st));
         }
         E += V_nuc;
@@ -273,11 +287,11 @@ __global__ void ex_assemble_kernel(const real* __restrict__ x, const real* __res
     valid_loc[w] = (valid_jet[w] && isfinite(E)) ? 1 : 0;
 }
 
-void ex_assemble(const real* x, const real* s, const real* t, const int* pair_ij, const real* S_swap, const real* S0, const real* E_kin, const real* v3n, const real* V_coul, const unsigned char* valid_jet, real* V_nuc, real* E_loc, unsigned char* valid_loc, int B, cudaStream_t stream) {
+void ex_assemble(const real* x, const real* s, const real* t, const int* pair_ij, const real* S_swap, const real* S0, const real* E_kin, const real* v3n, const real* V_coul, const unsigned char* valid_jet, real* V_nuc, real* E_loc, unsigned char* valid_loc, int B, const real* params, std::size_t P, cudaStream_t stream) {
     if (B <= 0) return;
     const real pi15 = (real)std::pow(3.14159265358979323846, 1.5);
     const int threads = 128;
-    ex_assemble_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(x, s, t, pair_ij, S_swap, S0, E_kin, v3n, V_coul, valid_jet, V_nuc, E_loc, valid_loc, pi15, B);
+    ex_assemble_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(x, s, t, pair_ij, S_swap, S0, E_kin, v3n, V_coul, valid_jet, V_nuc, E_loc, valid_loc, pi15, params + (P - envelope::n_params_env) + 1, B);
     cuda_sync_check("ex_assemble");
 }
 

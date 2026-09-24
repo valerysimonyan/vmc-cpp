@@ -104,8 +104,8 @@ __global__ void det_jet_kernel(const real* __restrict__ J_orb, const real* __res
 
 void det_jet_assemble(const real* J_orb, const real* Minv_batch, const real* dets, real* J_det, int Bc, int w_off, int B_tot, cudaStream_t stream) {
     if (Bc <= 0) return;
-    static_assert(D + 1 <= 32, "det_jet_kernel maps one thread per gradient component into a single warp");
-    const int threads = 32;
+    static_assert((std::size_t)(D*N*N + N*N + 2*D + 1) * sizeof(real) <= 48 * 1024, "det_jet_kernel: static shared memory exceeds 48 KiB at this N");
+    const int threads = ((D + 1 + 31) / 32) * 32;
     det_jet_kernel<<<(unsigned)((std::size_t)Bc * K), threads, 0, stream>>>(J_orb, Minv_batch, dets, J_det, Bc, w_off, B_tot);
     cuda_sync_check("det_jet_assemble");
 }
