@@ -114,3 +114,43 @@ from the data itself (`lambda > 0` marks an SR row) rather than a hardcoded
 step number, so it stays correct even if `N_gd` in `constants.h` changes.
 
 To stop the dashboard, `Ctrl+C` in the terminal running `plot_training.py`.
+
+# Run status (text)
+
+`run_status.py` prints a one-line summary per training run: a plain-text
+complement to `plot_training.py` for ssh sessions, and for comparing several
+runs side by side. Standard library only, so it needs no venv. Like the
+dashboard, it only reads files.
+
+A run is any directory with a `training.csv` (or one whose `run/`
+subdirectory holds it). Pass run directories, or a directory of them:
+
+```
+python3 run_status.py                      # the run in the current directory
+python3 run_status.py runs/                # every run under runs/
+python3 run_status.py runs/a runs/b --jastrow
+python3 run_status.py runs/ --watch 60     # redraw every 60 s, Ctrl+C to stop
+python3 run_status.py --help
+```
+
+Columns, averaged over the last `--window` iterations (default 100):
+
+- `stat`: `RUN` if a live `main` process has the run directory as its working
+  directory, else `done`. Start `./main` from the run directory for this to work.
+- `nuc`, `it/total`: the nucleus and `N_descent`, read from the nearest
+  `lib/constants.h` at or above the run directory.
+- `E`, `sd`: mean energy and its iteration-to-iteration scatter.
+- `var`: median local-energy variance. `r_rms` and `L2` are means.
+- `alpha`, `lam`, `ms/it`: the latest envelope exponent and SR lambda, and the
+  median time per iteration.
+- `E_ref`, `gap`: the model "o" reference energy (deuteron: the coded-H oracle;
+  others: arXiv:2607.09223 Fig. 5) and `E - E_ref`.
+- `frozen eval`: `run` is `main`'s own evaluation of `best_checkpoint.txt`,
+  found in any `*.log` next to `training.csv` (redirect `./main`'s output to a
+  file to keep it). `feval` is any `frozen_eval` output saved under `feval/*.log`.
+  The two can differ: `best_checkpoint.txt` is the lowest `E + E_err` iterate,
+  which a noisy run can pick early, so evaluate `periodic_checkpoint.txt` with
+  `frozen_eval` for the final state.
+
+`--jastrow` adds the envelope settings from `constants.h` and the `alpha` and
+`jastrow` lines of `periodic_checkpoint.txt`.

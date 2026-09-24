@@ -26,3 +26,6 @@
 !/tests/*.h
 !/tests/*.cpp
 !/tests/*.cu
+
+!/plot_training.py
+!/run_status.py
