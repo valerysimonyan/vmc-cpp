@@ -2,6 +2,8 @@
 #include "arena.h"
 #include "prof.h"
 
+#include "../envelope.h"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -178,11 +180,8 @@ __global__ void o_finalize_kernel(const double* __restrict__ src, opool_t* __res
     for (std::size_t k = threadIdx.x; k < P - 1; k += blockDim.x) row[k] = (opool_t)(in[k] / Sw);
 
     if (threadIdx.x == 0) {
-        const real* xw = x_sh + w * D;
-        real r2 = (real)0;
-        for (int i = 0; i < D; i++) { const real c = xw[i]; r2 += c * c; }
-        const real r_env = sqrt(r2 + (real)(eps_env * eps_env));
-        row[P - 1] = (opool_t)(-exp(alpha) * r_env);
+        const real r_env = envelope::radius(envelope::r2(x_sh + w * D));
+        row[P - 1] = (opool_t)envelope::O_alpha(alpha, r_env);
     }
 }
 

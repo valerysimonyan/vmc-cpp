@@ -1,5 +1,6 @@
 #include "det_kernels.h"
 #include "../physics.h"
+#include "../envelope.h"
 
 #include <cmath>
 
@@ -118,17 +119,14 @@ __global__ void envelope_logp_kernel(const real* __restrict__ x_sh, const real* 
     if (w >= B) return;
     const real alpha = *alpha_d;
 
-    real r2 = (real)0;
-    const real* xw = x_sh + (std::size_t)w * D;
-    for (int i = 0; i < D; i++) r2 += xw[i] * xw[i];
-    const real r_env = sqrt(r2 + (real)(eps_env * eps_env));
+    const real r_env = envelope::radius(envelope::r2(x_sh + (std::size_t)w * D));
 
     const real Sv = S[w];
     if (!(Sv != (real)0) || !isfinite(Sv)) {   // catches 0, -0 and NaN
         logp[w] = -INFINITY;
         return;
     }
-    logp[w] = -((real)beta_min + exp(alpha)) * r_env + log(fabs(Sv));
+    logp[w] = envelope::log_factor(alpha, r_env) + log(fabs(Sv));
 }
 
 void envelope_logp(const real* x_sh, const real* S, const real* params, std::size_t P, real* logp, int B, cudaStream_t stream) {
@@ -147,17 +145,14 @@ __global__ void combine_envelope_kernel(const real* __restrict__ rho, const real
     S[w] = acc;
 
     const real alpha = *alpha_d;
-    real r2 = (real)0;
-    const real* xw = x_sh + (std::size_t)w * D;
-    for (int i = 0; i < D; i++) r2 += xw[i] * xw[i];
-    const real r_env = sqrt(r2 + (real)(eps_env * eps_env));
+    const real r_env = envelope::radius(envelope::r2(x_sh + (std::size_t)w * D));
 
     const real Sv = acc;
     if (!(Sv != (real)0) || !isfinite(Sv)) {
         logp[w] = -INFINITY;
         return;
     }
-    logp[w] = -((real)beta_min + exp(alpha)) * r_env + log(fabs(Sv));
+    logp[w] = envelope::log_factor(alpha, r_env) + log(fabs(Sv));
 }
 
 void combine_envelope(const real* rho_out, const real* dets, real* S, const real* x_sh, const real* params, std::size_t P, real* logp, int B, cudaStream_t stream) {

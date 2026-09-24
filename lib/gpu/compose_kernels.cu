@@ -1,6 +1,8 @@
 #include "compose_kernels.h"
 #include "djet.h"
 
+#include "../envelope.h"
+
 #include <cmath>
 
 __device__ __forceinline__ void seed_coord_jet(DJet& o, const real* x_sh_w, int i) {
@@ -50,11 +52,11 @@ __global__ void psi_jet_compose_kernel(const real* __restrict__ J_rho, const rea
         djet_mul(sq, c_i, c_i);
         djet_add(r2, r2, sq);
     }
-    r2.v += (real)(eps_env * eps_env);     
+    r2.v += envelope::eps2<real>();   
 
     DJet r_env; djet_sqrt(r_env, r2);
 
-    DJet beta; djet_const(beta, (real)beta_min + exp(alpha));
+    DJet beta; djet_const(beta, envelope::rate(alpha));
     DJet negb; djet_scale(negb, beta, (real)-1);
     DJet arg;  djet_mul(arg, negb, r_env);
     DJet env;  djet_exp(env, arg);
@@ -160,11 +162,8 @@ __global__ void validity_jet_kernel(const real* __restrict__ J_psi, const real* 
     const real Sv = S[gw];
 
     // psi_double = psi_impl<double>'s last line: exp(-(beta_min+exp(alpha))*r_env) * S
-    const real* xw = x_sh + gw * D;
-    real r2 = (real)0;
-    for (int i = 0; i < D; i++) r2 += xw[i] * xw[i];
-    const real r_env = sqrt(r2 + (real)(eps_env * eps_env));
-    const real pd = exp(-((real)beta_min + exp(alpha)) * r_env) * Sv;
+    const real r_env = envelope::radius(envelope::r2(x_sh + gw * D));
+    const real pd = exp(envelope::log_factor(alpha, r_env)) * Sv;
     psi_dbl[gw] = pd;
 
     if (!isfinite(Sv) || fabs(Sv) < (real)1e-290) { valid[gw] = 0; return; }

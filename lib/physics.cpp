@@ -3,6 +3,7 @@
 #include "physics.h"
 #include "autodiff.h"
 #include "slater.h"
+#include "envelope.h"
 
 #include <cmath>
 #include <limits>
@@ -184,12 +185,12 @@ static T psi_impl(const double* x, const double* s, const double* t, const Ansat
     T r2{};
     for (int i = 0; i < D; i++) r2 = r2 + coord(i) * coord(i);
     T r_env = sqrt(r2 + eps_env*eps_env);
-    return exp(- (T(beta_min) + exp(a.alpha)) * r_env) * sum;
+    return exp(envelope::log_factor(a.alpha, envelope::radius(r2))) * sum;
 }
 
 
 
-// Double evaluation of psi
+// Double evaluation of psi 
 double psi (const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, bool need_inv) {
     return psi_impl<double>(x, s, t, a, ws, need_inv);
 }
@@ -441,13 +442,9 @@ static void fill_O(const Ansatz& a, Workspace& ws, double S, std::vector<double>
     }
     for (std::size_t p = 0; p < n_orb; p++) O_out[n_h + n_rho + p] = ws.dtheta_orb[p]/S;
 
-    double r2 = 0.0;
-    for (int i = 0; i < D; i++) {
-        double c = ws.x_sh[i];
-        r2 += c * c;
-    }
-    double r_env = std::sqrt(r2 + eps_env*eps_env);
-    O_out[n_h+n_rho+n_orb] = -std::exp(a.alpha) * r_env;
+    const double r_env = envelope::radius(envelope::r2(ws.x_sh.data()));
+    O_out[n_h+n_rho+n_orb] = envelope::O_alpha(a.alpha, r_env);
+
 }
 
 void assemble_O(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, std::vector<double>& O_out) {
