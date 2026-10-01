@@ -107,19 +107,19 @@ inline constexpr bool env_adam_alpha = false;       // false: Adam on the Jastro
 // -------------- //
 
 // Total Descent Parameters
-inline constexpr int N_descent = 10000;  // Total step count
-inline constexpr double clip_mad = 5.0;  // Clipping parameter for gradient
+inline constexpr int N_gd = 0;                 // Number of ADAM steps
+inline constexpr int N_sr = 2e3;               // Number of SR steps
+inline constexpr int N_descent = N_gd + N_sr;  // Total step count
+inline constexpr double clip_mad = 5.0;        // Clipping parameter for gradient
 inline constexpr int grow_at_iter = (int)(batch_grow_frac * N_descent);
 
 // ADAM descent parameters
-inline constexpr int N_gd = 0;
 inline constexpr double lr = 0.075;
 inline constexpr double beta1 = .9;
 inline constexpr double beta2 = .999;
 inline constexpr double eps = 1e-8;
 
 // SR descent parameters
-inline constexpr int N_sr = N_descent - N_gd;
 inline constexpr double sr_eta        = 0.10;   // Initial learning rate
 inline constexpr double sr_lambda0    = 100.0;  // Initial lambda (added weight to diagonal elements)
 inline constexpr double sr_lambda_min = 0.4;    // Minimum lambda

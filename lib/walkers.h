@@ -15,7 +15,6 @@ struct WalkerBatch {
     std::vector<double> s, t;  // B * N
     std::vector<double> logp;  // B
 
-    std::vector<uint8_t> valid;                   // Can store number in binary from 0-255
     std::vector<std::mt19937> rng;                // B, one rng stream per walker
     std::vector<long long> acc, sp_acc, tau_acc;  // B, counters 
     
