@@ -4,6 +4,7 @@
 // (there were no psi-level FD, antisymmetry or translation-invariance
 // regressions before this file), so they are written here rather than re-run.
 #include "../lib/physics.h"
+#include "../lib/envelope.h"
 #include "../lib/slater.h"
 #include "../lib/network.h"
 #include "../lib/constants.h"
@@ -36,7 +37,7 @@ static void standard_sector(std::vector<double>& s, std::vector<double>& t) {
 // ws.jM (K*N*N entry jets), ws.jrho (K) and ws.jin_sh (D, CM-shifted coords)
 // populated, so the old composition can be rebuilt from them verbatim without
 // production code carrying a legacy flag.
-static Jet legacy_jet_compose(const Ansatz& a, Workspace& ws) {
+static Jet legacy_jet_compose(const Ansatz& a, Workspace& ws, const std::vector<double>& s, const std::vector<double>& t) {
     std::vector<Jet> scratch((std::size_t)N*N);
     std::vector<int> piv;
     Jet sum{};
@@ -48,7 +49,11 @@ static Jet legacy_jet_compose(const Ansatz& a, Workspace& ws) {
     Jet r2{};
     for (int i = 0; i < D; i++) r2 = r2 + ws.jin_sh[i] * ws.jin_sh[i];
     Jet r_env = sqrt(r2 + eps_env*eps_env);
-    return exp(-(Jet(beta_min) + std::exp(a.alpha)) * r_env) * sum;
+    double xs[D];
+    for (int i = 0; i < D; i++) xs[i] = ws.jin_sh[i].v;
+    Jet Jj{};
+    Jj.v = envelope::jastrow<double, double>(xs, s.data(), t.data(), a.jc.data(), Jj.g.data(), &Jj.l);
+    return exp(-(Jet(beta_min) + std::exp(a.alpha)) * r_env + Jj) * sum;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +71,7 @@ static void test_full_psi_oracle(const Ansatz& a) {
         for (int d = 0; d < D; d++) x[d] = dist(rng);
 
         Jet got = jpsi(x, s, t, a, ws);          // new path; leaves jM/jrho/jin_sh
-        Jet ref = legacy_jet_compose(a, ws);     // old path, same buffers
+        Jet ref = legacy_jet_compose(a, ws, s, t);     // old path, same buffers
 
         CHECK(std::fabs(got.v - ref.v) <= 1e-10 * std::fabs(ref.v),
               "test 1: psi value, trial " + std::to_string(trial));
@@ -230,7 +235,7 @@ static void test_local_E(const Ansatz& a) {
         // The jet psi that fed E_loc must match the legacy composition. ws1's
         // jet buffers still hold that evaluation's jM/jrho/jin_sh.
         Jet again = jpsi(x, s, t, a, ws1);
-        Jet ref   = legacy_jet_compose(a, ws1);
+        Jet ref   = legacy_jet_compose(a, ws1, s, t);
         CHECK(std::fabs(again.l - ref.l) <= 1e-10 * std::max(std::fabs(ref.l), std::fabs(ref.v)),
               "test 4: kinetic term source disagrees with legacy composition");
     }

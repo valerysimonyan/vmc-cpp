@@ -75,6 +75,16 @@ static double legacy_local_E(const std::vector<double>& x, const std::vector<dou
                     R_s=swap_ratio(s,t,i,j,s[j],t[i],s[i],t[j],S0,use_rank2,a,ws);
                     R_st=swap_ratio(s,t,i,j,s[j],t[j],s[i],t[i],S0,use_rank2,a,ws);
                 }
+                if (n_jas_cls > 1) {   // channel-dependent Jastrow: exchange ratios pick up exp(dJ), as in local_E
+                    double s1[N], t1[N];
+                    for (int q = 0; q < N; q++) { s1[q] = s[q]; t1[q] = t[q]; }
+                    s1[i] = s[j]; s1[j] = s[i];
+                    const double dS = envelope::jastrow_dlabel<double, double>(x.data(), s.data(), t.data(), s1, t.data(), a.jc.data());
+                    t1[i] = t[j]; t1[j] = t[i];
+                    const double dST = envelope::jastrow_dlabel<double, double>(x.data(), s.data(), t.data(), s1, t1, a.jc.data());
+                    const double dT = envelope::jastrow_dlabel<double, double>(x.data(), s.data(), t.data(), s.data(), t1, a.jc.data());
+                    R_s *= std::exp(dS); R_t *= std::exp(dT); R_st *= std::exp(dST);
+                }
                 V_nuc += (hbarc/4.0)*(C01*v01*(1.0+R_t-R_s-R_st) + C10*v10*(1.0-R_t+R_s-R_st));
             }
         }

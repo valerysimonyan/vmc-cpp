@@ -2,13 +2,11 @@
 
 // Shared test helper: pin an Ansatz's parameters to a fixed pseudo-random draw.
 //
-// Network's constructor fills params via gen_uniform_sample, which seeds a
-// thread_local mt19937 from std::random_device -- so a freshly constructed
-// Ansatz has DIFFERENT parameters on every run. Tests that compare against
-// finite differences or fixed tolerances are then non-reproducible: before this
-// was pinned, test_psi_jet_swap's second-difference check failed roughly one run
-// in six, on a wavefunction that happened to be badly scaled. A committed suite
-// has to be green every time or it teaches people to ignore it.
+// Tests pin their own parameters instead of relying on the constructor's draw, so a
+// test's wavefunction never changes when init_seed or the network layout changes.
+// Before this was pinned, test_psi_jet_swap's second-difference check failed roughly
+// one run in six on a badly scaled wavefunction. The Jastrow coefficients are drawn
+// nonzero so every test exercises the Jastrow paths (BACKLOG D8).
 //
 // Call this immediately after constructing any Ansatz used by a test.
 
@@ -23,4 +21,5 @@ inline void seed_ansatz(Ansatz& a, unsigned long long seed) {
     for (double& p : a.rho_net.params) p = u(rng);
     for (double& p : a.orb_net.params) p = u(rng);
     a.alpha = 0.65;   // constructor's value; not randomized (it sets the envelope)
+    for (double& c : a.jc) c = 0.5 * u(rng);   // nonzero Jastrow (trained |c| ~ 0.25); drawn last so the network draws are unchanged
 }
