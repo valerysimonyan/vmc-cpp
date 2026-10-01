@@ -78,7 +78,7 @@ static std::vector<int> ckpt_hidden(const char* path, const char* name) {
 template <typename PT>
 static void storage_checks(DeviceState& ds, cublasHandle_t h, const Ansatz& a, Workspace& ws, int B) {
     static_assert(opool_stage_rows >= 512, "the storage check needs one record in a single staging chunk");
-    ds.grow_phase5(a, false); ds.grow_phase52(false);
+    ds.alloc_backprop(a, false); ds.alloc_sr(false);
     eval_local_E_device(ds, h, a, ws, B, 0, /*stash_for_O=*/true);
     assemble_O_batch(ds, h, 0, B);
     const std::size_t P = ds.P, Ns = (std::size_t)B;
@@ -153,7 +153,7 @@ int main() {
         WalkerBatch wb; wb.init(B);
         init_batch(wb, a, &pool, wss);
         DeviceState ds(a, false);
-        ds.grow_phase3(a, false); ds.grow_phase33(false); ds.grow_phase4(false); ds.grow_phase42(false); ds.grow_phase43(false);
+        ds.alloc_eval(a, false); ds.alloc_sampler(false); ds.alloc_jet_nets(false); ds.alloc_jet_dets(false); ds.alloc_exchange(false);
         PinnedArray st;
         ds.upload_params(a, st);
         upload_and_reset(ds, wb, st);

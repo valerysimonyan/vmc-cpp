@@ -38,9 +38,8 @@ std::size_t arena_bytes_for(const Ansatz& a, std::size_t B) {
     std::size_t total = 0;
     try {
         DeviceState ds(a, false, B);
-        ds.grow_phase3(a, false); ds.grow_phase33(false); ds.grow_phase4(false); ds.grow_phase42(false);
-        ds.grow_phase43(false); ds.grow_phase5(a, false); ds.grow_phase52(false); ds.grow_phase53(false);
-        total = ds.total_bytes() + ds.phase3_bytes() + ds.phase33_bytes() + ds.phase4_bytes() + ds.phase42_bytes() + ds.phase43_bytes() + ds.phase5_bytes() + ds.phase52_bytes() + ds.phase53_bytes();
+        ds.allocate(a, true, false);
+        total = ds.allocated_bytes();
     } catch (...) { 
         g_dry_alloc = false; throw; 
     }

@@ -329,7 +329,7 @@ void M_inv_device(const double* S_diag, const double* d_rms, double lambda_t, do
 // Take an SR step
 SRStepLog SR_step_device(DeviceState& ds, cublasHandle_t h, Ansatz& a, int iter, std::size_t n_samples, long long n_valid, std::vector<double>& delta_host, long long* n_dl, cudaStream_t stream) {
     const std::size_t P = ds.P;
-    if (ds.O_exp_d.n < P) throw std::runtime_error("SR_step_device: grow_phase52 has not run");
+    if (ds.O_exp_d.n < P) throw std::runtime_error("SR_step_device: alloc_sr has not run");
     long long dl = 0;
 
     double lambda_t = std::max(sr_lambda0 * std::pow(sr_rho, iter), sr_lambda_min);

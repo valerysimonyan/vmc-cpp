@@ -1,6 +1,5 @@
 #ifdef VMC_CUDA
 
-#include "monte_carlo.h"
 #include "physics.h"
 #include "constants.h"
 #include "util.h"
@@ -178,8 +177,7 @@ DescentResult descent_mg(Ansatz& a) {
         CUDA_CHECK(cudaSetDevice(R->dev));    // Set device matching replica
         // Allocate memory
         R->ds = std::make_unique<DeviceState>(a, true, (std::size_t)R->B);
-        R->ds->grow_phase3(a); R->ds->grow_phase33(); R->ds->grow_phase4(); R->ds->grow_phase42();
-        R->ds->grow_phase43(); R->ds->grow_phase5(a); R->ds->grow_phase52(); R->ds->grow_phase53();
+        R->ds->allocate(a, true);
         // Assign handles
         if (cublasCreate(&R->h) != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("descent_mg: cublasCreate failed");
     }

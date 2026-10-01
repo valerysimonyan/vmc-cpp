@@ -47,8 +47,8 @@ static void rand_cfg(int B, std::vector<double>& hx, std::vector<double>& hs, st
 struct Dev {
     DeviceState ds;
     explicit Dev(const Ansatz& a) : ds(a, false) {
-        ds.grow_phase3(a, false); ds.grow_phase33(false); ds.grow_phase4(false);
-        ds.grow_phase42(false);   ds.grow_phase43(false);
+        ds.alloc_eval(a, false); ds.alloc_sampler(false); ds.alloc_jet_nets(false);
+        ds.alloc_jet_dets(false);   ds.alloc_exchange(false);
     }
     void push(const std::vector<double>& hx, const std::vector<double>& hs, const std::vector<double>& ht, const Ansatz& a) {
         PinnedArray st; ds.upload_params(a, st);
@@ -345,7 +345,7 @@ static void test_determinism(const Ansatz& a, cublasHandle_t h) {
     init_batch(wb0, a, &pool, wss);
 
     Dev dv(a);
-    dv.ds.grow_phase5(a, false); dv.ds.grow_phase52(false); dv.ds.grow_phase53(false);
+    dv.ds.alloc_backprop(a, false); dv.ds.alloc_sr(false); dv.ds.alloc_stats(false);
     PinnedArray st; dv.ds.upload_params(a, st);
     const std::size_t P = a.n_params(), Ns = (std::size_t)B * records;
 

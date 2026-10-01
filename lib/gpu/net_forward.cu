@@ -76,7 +76,7 @@ static void net_forward_f32(cublasHandle_t handle, const DeviceNet& dn, const re
 void net_forward(cublasHandle_t handle, const DeviceNet& dn, const real* params, const real* in, int rows, real* a, real* b, real* out, cudaStream_t stream, NetCache* cache) {
     if (rows <= 0 || dn.layers.empty()) return;
     if (cache && ((std::size_t)rows > cache->rows_cap || cache->z.size() != dn.layers.size()))
-        throw std::runtime_error("net_forward: activation stash is smaller than this call (grow_phase5 not run, or rows over capacity)");
+        throw std::runtime_error("net_forward: activation stash is smaller than this call (alloc_backprop not run, or rows over capacity)");
     if constexpr (fp32_forward) { net_forward_f32(handle, dn, params, in, rows, a, b, out, stream, cache); return; }
     const real* cur = in;
     real* nxt = a;

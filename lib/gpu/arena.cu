@@ -18,10 +18,25 @@ std::size_t check_param_layout(const Ansatz& a) {
     return (std::size_t)-1;
 }
 
-std::size_t DeviceState::total_bytes() const {
-    return x.bytes() + s.bytes() + t.bytes() + logp.bytes() + valid.bytes()
-            + rng_ctr.bytes() + params.bytes()
-            + E_pool.bytes() + O_pool.bytes() + valid_pool.bytes() + params_f.bytes();
+// Ensure layout is correct before computing neccesarry allocation
+static void check_backprop_layout(const Ansatz& a, const DeviceNet& dn, const Network& net, std::size_t base, const char* name) {
+    if (dn.layers.size() != net.layers.size())
+        throw std::runtime_error(std::string("alloc_backprop: layer count mismatch in ") + name);
+    for (std::size_t l = 0; l < net.layers.size(); l++) {
+        const auto& L = dn.layers[l];
+        const auto& H = net.layers[l];
+        const bool ok = L.in_w == H.input_size && L.out_w == H.output_size
+                     && L.w_off == base + (std::size_t)H.weight_offset
+                     && L.b_off == base + (std::size_t)H.bias_offset
+                     && L.b_off == L.w_off + (std::size_t)L.in_w * L.out_w;
+        if (!ok) {
+            std::ostringstream oss;
+            oss << "alloc_backprop: " << name << " layer " << l << " offsets are not the canonical "
+                << "[weights then biases] layout the backprop kernels write into";
+            throw std::runtime_error(oss.str());
+        }
+    }
+    (void)a;
 }
 
 DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers) {
@@ -68,7 +83,6 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers) {
         s.alloc(B * (std::size_t)N);
         t.alloc(B * (std::size_t)N);
         logp.alloc(B);
-        valid.alloc(B);
         rng_ctr.alloc(B);
         params.alloc(P);
         E_pool.alloc(Ns_max);
@@ -95,7 +109,7 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers) {
                     B, P, Ns_max, real_name);
         std::printf("  walkers (x,s,t,logp,valid,rng) %8.3f MiB\n",
                     (double)(x.bytes()+s.bytes()+t.bytes()+logp.bytes()
-                             +valid.bytes()+rng_ctr.bytes()) / (1024.0*1024));
+                             +rng_ctr.bytes()) / (1024.0*1024));
         std::printf("  params                         %8.3f MiB\n",
                     (double)params.bytes() / (1024.0*1024));
         std::printf("  E_pool + valid_pool            %8.3f MiB\n",
@@ -106,21 +120,34 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers) {
                     (double)total_bytes() / (1024.0*1024*1024), o_pool_max_gb);        
     }
 }
+// --- MEMORY ALLOCATION --- //
+// Return walker state memory in bytes
+std::size_t DeviceState::total_bytes() const {
+    return x.bytes() + s.bytes() + t.bytes() + logp.bytes() + rng_ctr.bytes() + params.bytes() + E_pool.bytes() + O_pool.bytes() + valid_pool.bytes() + params_f.bytes();
+}
 
-std::size_t DeviceState::phase53_bytes() const {
+// Compute memory for statistic arrays in bytes
+void DeviceState::alloc_stats(bool verbose) {
+    Ew_d.alloc(B); E2w_d.alloc(B); l2w_d.alloc(B); r2w_d.alloc(B); nw_d.alloc(B);
+    pack_d.alloc(Ns_max * (sizeof(double) + sizeof(unsigned char)) + B * (4*sizeof(double) + sizeof(int) + 3*sizeof(long long)));
+    if (verbose)
+        std::printf("DeviceState::alloc_stats: walker stats + pack buffer %.3f MiB\n", (double)stats_bytes() / (1024.0*1024.0));
+}
+std::size_t DeviceState::stats_bytes() const {
     return Ew_d.bytes() + E2w_d.bytes() + l2w_d.bytes() + r2w_d.bytes() + nw_d.bytes() + pack_d.bytes();
 }
 
-void DeviceState::grow_phase53(bool verbose) {
-    Ew_d.alloc(B); E2w_d.alloc(B); l2w_d.alloc(B); r2w_d.alloc(B); nw_d.alloc(B);
-    pack_d.alloc(Ns_max * (sizeof(double) + sizeof(unsigned char))
-                 + B * (4*sizeof(double) + sizeof(int) + 3*sizeof(long long)));
+// Compute memory for SR matrix computation
+void DeviceState::alloc_sr(bool verbose) {
+    for (DeviceArray<double>* x : {&mask_d, &E_clip_d, &t_ns_d}) x->alloc(Ns_max);
+    for (DeviceArray<double>* x : {&O_exp_d, &S_diag_d, &grad_d, &v_rms_d, &d_rms_d, &M_inv_d,
+                                   &cg_r, &cg_z, &cg_p, &cg_Ap, &delta_d, &S_delta_d}) x->alloc(P);
+    v_rms_d.zero();      // descent() starts v_rms at 0 ...
+    delta_d.zero();      // ... and delta (the CG warm start) at 0
     if (verbose)
-        std::printf("DeviceState::grow_phase53: walker stats + pack buffer %.3f MiB\n", (double)phase53_bytes() / (1024.0*1024.0));
+        std::printf("DeviceState::alloc_sr: SR vectors %.3f MiB\n", (double)sr_bytes() / (1024.0*1024.0));
 }
-
-
-std::size_t DeviceState::phase52_bytes() const {
+std::size_t DeviceState::sr_bytes() const {
     std::size_t b = 0;
     for (const DeviceArray<double>* x : {&mask_d, &E_clip_d, &t_ns_d, &O_exp_d, &S_diag_d, &grad_d, &v_rms_d, &d_rms_d,
                                          &M_inv_d, &cg_r, &cg_z, &cg_p, &cg_Ap, &delta_d, &S_delta_d})
@@ -128,48 +155,14 @@ std::size_t DeviceState::phase52_bytes() const {
     return b;
 }
 
-void DeviceState::grow_phase52(bool verbose) {
-    for (DeviceArray<double>* x : {&mask_d, &E_clip_d, &t_ns_d}) x->alloc(Ns_max);
-    for (DeviceArray<double>* x : {&O_exp_d, &S_diag_d, &grad_d, &v_rms_d, &d_rms_d, &M_inv_d,
-                                   &cg_r, &cg_z, &cg_p, &cg_Ap, &delta_d, &S_delta_d}) x->alloc(P);
-    v_rms_d.zero();      // descent() starts v_rms at 0 ...
-    delta_d.zero();      // ... and delta (the CG warm start) at 0
-    if (verbose)
-        std::printf("DeviceState::grow_phase52: SR vectors %.3f MiB\n", (double)phase52_bytes() / (1024.0*1024.0));
-}
-
-std::size_t DeviceState::phase5_bytes() const {
-    return cache_h.bytes() + cache_rho.bytes() + cache_orb.bytes()
-         + bp_a.bytes() + bp_b.bytes() + dpsi_dxi.bytes() + bp_wt.bytes() + O_stage.bytes();
-}
-
-static void check_backprop_layout(const Ansatz& a, const DeviceNet& dn, const Network& net, std::size_t base, const char* name) {
-    if (dn.layers.size() != net.layers.size())
-        throw std::runtime_error(std::string("grow_phase5: layer count mismatch in ") + name);
-    for (std::size_t l = 0; l < net.layers.size(); l++) {
-        const auto& L = dn.layers[l];
-        const auto& H = net.layers[l];
-        const bool ok = L.in_w == H.input_size && L.out_w == H.output_size
-                     && L.w_off == base + (std::size_t)H.weight_offset
-                     && L.b_off == base + (std::size_t)H.bias_offset
-                     && L.b_off == L.w_off + (std::size_t)L.in_w * L.out_w;
-        if (!ok) {
-            std::ostringstream oss;
-            oss << "grow_phase5: " << name << " layer " << l << " offsets are not the canonical "
-                << "[weights then biases] layout the backprop kernels write into";
-            throw std::runtime_error(oss.str());
-        }
-    }
-    (void)a;
-}
-
-void DeviceState::grow_phase5(const Ansatz& a, bool verbose) {
+// Compute memory for backpropagation
+void DeviceState::alloc_backprop(const Ansatz& a, bool verbose) {
     const std::size_t n_h = a.h_net.params.size(), n_rho = a.rho_net.params.size(), n_orb = a.orb_net.params.size();
     check_backprop_layout(a, h_net_d,   a.h_net,   0,            "h_net");
     check_backprop_layout(a, rho_net_d, a.rho_net, n_h,          "rho_net");
     check_backprop_layout(a, orb_net_d, a.orb_net, n_h + n_rho,  "orb_net");
     if (n_h + n_rho + n_orb + 1 + n_jas_par != P)
-        throw std::runtime_error("grow_phase5: P is not h + rho + orb + alpha + jastrow; the envelope O slots would be wrong");
+        throw std::runtime_error("alloc_backprop: P is not h + rho + orb + alpha + jastrow; the envelope O slots would be wrong");
 
     const std::size_t rows = B * (std::size_t)N;
     cache_h.alloc(h_net_d, rows);
@@ -189,36 +182,35 @@ void DeviceState::grow_phase5(const Ansatz& a, bool verbose) {
     bp_b.alloc(rows * (std::size_t)widest);
     dpsi_dxi.alloc(B * (std::size_t)m_feat);
 
-    const double grand_gb = (double)(total_bytes() + phase3_bytes() + phase33_bytes() + phase4_bytes()
-                                     + phase42_bytes() + phase43_bytes() + phase5_bytes()) / (1024.0*1024.0*1024.0);
+    const double grand_gb = (double)(total_bytes() + eval_bytes() + sampler_bytes() + jet_net_bytes()
+                                     + jet_det_bytes() + exchange_bytes() + backprop_bytes()) / (1024.0*1024.0*1024.0);
     if (grand_gb > o_pool_max_gb && soft_cap && !g_dry_alloc) {
         std::ostringstream oss;
-        oss << "DeviceState::grow_phase5: total would be " << grand_gb << " GiB, over the "
+        oss << "DeviceState::alloc_backprop: total would be " << grand_gb << " GiB, over the "
             << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).";
         throw std::runtime_error(oss.str());
     }
     if (verbose) {
         auto mib = [](std::size_t b){ return (double)b/(1024.0*1024.0); };
-        std::printf("DeviceState::grow_phase5: widest layer %d\n", widest);
+        std::printf("DeviceState::alloc_backprop: widest layer %d\n", widest);
         std::printf("  activation stash h/rho/orb      %8.3f / %.3f / %.3f MiB\n",
                     mib(cache_h.bytes()), mib(cache_rho.bytes()), mib(cache_orb.bytes()));
         std::printf("  backprop ping-pong + dpsi_dxi   %8.3f MiB\n", mib(bp_a.bytes()+bp_b.bytes()+dpsi_dxi.bytes()));
-        std::printf("  PHASE 5 ADDED                   %8.3f MiB\n", mib(phase5_bytes()));
+        std::printf("  backprop added                  %8.3f MiB\n", mib(backprop_bytes()));
         std::printf("  GRAND TOTAL                     %8.3f GiB  (cap %.1f GiB)\n", grand_gb, o_pool_max_gb);
     }
 }
-
-std::size_t DeviceState::phase43_bytes() const {
-    return dets_psi.bytes() + xi_psi.bytes() + S0.bytes() + rank2_ok.bytes() + pair_ij.bytes()
-         + ex_active.bytes() + xi_swap.bytes() + rho_swap.bytes() + S_swap.bytes()
-         + V_coul.bytes() + V_nuc.bytes() + E_loc.bytes() + valid_loc.bytes();
+std::size_t DeviceState::backprop_bytes() const {
+    return cache_h.bytes() + cache_rho.bytes() + cache_orb.bytes()
+         + bp_a.bytes() + bp_b.bytes() + dpsi_dxi.bytes() + bp_wt.bytes() + O_stage.bytes();
 }
 
-void DeviceState::grow_phase43(bool verbose) {
+// Compute memory needed for energy evaluation
+void DeviceState::alloc_exchange(bool verbose) {
     const std::size_t per_w = (std::size_t)ex_types * ex_npairs;
     const std::size_t slots_chunk = (std::size_t)ex_w * per_w;
     if (ex_w < 1 || slots_chunk > rows_max)
-        throw std::runtime_error("DeviceState::grow_phase43: ex_walkers chunk does not fit the Phase 3 ping-pong");
+        throw std::runtime_error("DeviceState::alloc_exchange: ex_walkers chunk does not fit the alloc_eval ping-pong buffers");
 
     dets_psi.alloc((std::size_t)K * B);
     xi_psi.alloc(B * (std::size_t)m_feat);
@@ -238,37 +230,190 @@ void DeviceState::grow_phase43(bool verbose) {
     E_loc.alloc(B);
     valid_loc.alloc(B);
 
-    const double grand_gb = (double)(total_bytes() + phase3_bytes() + phase33_bytes() + phase4_bytes()
-                                     + phase42_bytes() + phase43_bytes()) / (1024.0*1024.0*1024.0);
+    const double grand_gb = (double)(total_bytes() + eval_bytes() + sampler_bytes() + jet_net_bytes()
+                                     + jet_det_bytes() + exchange_bytes()) / (1024.0*1024.0*1024.0);
     if (grand_gb > o_pool_max_gb && soft_cap && !g_dry_alloc) {
         std::ostringstream oss;
-        oss << "DeviceState::grow_phase43: total would be " << grand_gb << " GiB, over the "
+        oss << "DeviceState::alloc_exchange: total would be " << grand_gb << " GiB, over the "
             << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).";
         throw std::runtime_error(oss.str());
     }
 
     if (verbose) {
         auto mib = [](std::size_t b){ return (double)b/(1024.0*1024.0); };
-        std::printf("DeviceState::grow_phase43: npairs=%d  slot chunk=%d walkers (%zu rows)\n",
+        std::printf("DeviceState::alloc_exchange: npairs=%d  slot chunk=%d walkers (%zu rows)\n",
                     ex_npairs, ex_w, slots_chunk);
         std::printf("  dets_psi + xi_psi + S0          %8.3f MiB\n", mib(dets_psi.bytes()+xi_psi.bytes()+S0.bytes()));
         std::printf("  xi_swap + rho_swap (chunked)    %8.3f MiB\n", mib(xi_swap.bytes()+rho_swap.bytes()));
         std::printf("  S_swap + ex_active (full batch) %8.3f MiB\n", mib(S_swap.bytes()+ex_active.bytes()));
-        std::printf("  PHASE 4.3 ADDED                 %8.3f MiB\n", mib(phase43_bytes()));
+        std::printf("  exchange added                  %8.3f MiB\n", mib(exchange_bytes()));
         std::printf("  GRAND TOTAL                     %8.3f GiB  (cap %.1f GiB)\n", grand_gb, o_pool_max_gb);
     }
 }
-
-
-std::size_t DeviceState::phase3_bytes() const {
-    return x_sh.bytes() + feat_in.bytes() + h_out.bytes() + xi.bytes()
-         + rho_out.bytes() + orb_out.bytes() + act_a.bytes() + act_b.bytes()
-         + lu_ptrs.bytes() + lu_info.bytes() + lu_piv.bytes()
-         + M_batch.bytes() + dets.bytes() + S.bytes() + fwd_in_f.bytes() + fwd_out_f.bytes();
+std::size_t DeviceState::exchange_bytes() const {
+    return dets_psi.bytes() + xi_psi.bytes() + S0.bytes() + rank2_ok.bytes() + pair_ij.bytes()
+         + ex_active.bytes() + xi_swap.bytes() + rho_swap.bytes() + S_swap.bytes()
+         + V_coul.bytes() + V_nuc.bytes() + E_loc.bytes() + valid_loc.bytes();
 }
 
-// Build networks
-void DeviceState::grow_phase3(const Ansatz& a, bool verbose) {
+// Compute memory needed for sampler
+void DeviceState::alloc_sampler(bool verbose) {
+    x_prop.alloc(B * (std::size_t)D);
+    logp_prop.alloc(B);
+    S_prop.alloc(B);
+    S_cur.alloc(B);
+    prop_idx.alloc(B);
+    s_prop.alloc(B * (std::size_t)N);
+    t_prop.alloc(B * (std::size_t)N);
+    pick_a.alloc(B);
+    pick_b.alloc(B);
+    acc.alloc(B);      acc.zero();
+    sp_acc.alloc(B);   sp_acc.zero();
+    tau_acc.alloc(B);  tau_acc.zero();
+
+    if (verbose) {
+        std::printf("DeviceState::alloc_sampler: sampler state %8.3f MiB  (TOTAL %.3f GiB)\n",
+                    (double)sampler_bytes()/(1024.0*1024),
+                    (double)(total_bytes()+eval_bytes()+sampler_bytes())/(1024.0*1024*1024));
+    }
+}
+std::size_t DeviceState::sampler_bytes() const {
+    return x_prop.bytes() + logp_prop.bytes() + S_prop.bytes() + S_cur.bytes()
+         + prop_idx.bytes() + s_prop.bytes() + t_prop.bytes()
+         + pick_a.bytes() + pick_b.bytes()
+         + acc.bytes() + sp_acc.bytes() + tau_acc.bytes();
+}
+
+// Compute memory for jet networks
+void DeviceState::alloc_jet_nets(bool verbose) {
+    const std::size_t C = (std::size_t)jet_C;
+    const std::size_t rows = jet_rows; 
+    const std::size_t W = (std::size_t)jet_walkers;
+
+    // Take the largest hidden width
+    const int hidden = std::max(1, std::max(std::max(h_net_d.hidden_width, rho_net_d.hidden_width), orb_net_d.hidden_width));
+
+    // Measure memory
+    const std::size_t n_feat = C * rows * (std::size_t)(dim + 2);
+    const std::size_t n_h = C * rows * (std::size_t)m_feat;
+    const std::size_t n_xi = C * W * (std::size_t)m_feat;
+    const std::size_t n_rho = C * W * (std::size_t)K;
+    const std::size_t n_orb = C * rows * (std::size_t)(K * N);
+    const std::size_t n_pp = C * rows * (std::size_t)hidden;
+    const std::size_t want = (n_feat + n_h + n_xi + n_rho + n_orb + 2*n_pp) * sizeof(real)
+        + (fp32_forward ? (std::max(n_feat, n_xi) + std::max(std::max(n_h, n_rho), n_orb)) * sizeof(float) : 0);
+
+    const double grand_gb = (double)(total_bytes() + eval_bytes() + sampler_bytes() + want) / (1024.0*1024.0*1024.0);
+
+    // Throw error if memory exceeds limit on allocation
+    if (grand_gb > o_pool_max_gb && soft_cap && !g_dry_alloc) {
+        std::ostringstream oss;
+        oss << "DeviceState::alloc_jet_nets: total would be " << grand_gb << " GiB, over the "
+            << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).\n"
+            << "  The jet networks alone want " << (double)want/(1024.0*1024*1024) << " GiB at jet_chunk="
+            << jet_chunk << " (" << jet_walkers << " walkers).\n"
+            << "  REMEDY: set jet_chunk in constants.h to a fraction of n_walkers ("
+            << B << "). The jet pipeline is walker-independent, so chunking is\n"
+            << "  exactly equivalent -- only GEMM row counts change. jet_chunk="
+            << (B/2) << " roughly halves the figure above.";
+        throw std::runtime_error(oss.str());
+    }
+
+    // Allocate memory
+    jet_feat.alloc(n_feat);
+    jet_h.alloc(n_h);
+    jet_xi.alloc(n_xi);
+    jet_rho.alloc(n_rho);
+    jet_orb.alloc(n_orb);
+    jet_a.alloc(n_pp);
+    jet_b.alloc(n_pp);
+
+    if constexpr (fp32_forward) {
+        jet_in_f.alloc(std::max(n_feat, n_xi));
+        jet_out_f.alloc(std::max(std::max(n_h, n_rho), n_orb));
+        for (DeviceNet* dn : {&h_net_d, &rho_net_d, &orb_net_d}) {
+            dn->jin_f = jet_in_f.d;   dn->jin_f_cap = jet_in_f.n;
+            dn->jout_f = jet_out_f.d; dn->jout_f_cap = jet_out_f.n;
+        }
+    }
+
+    if (verbose) {
+        auto mib = [](std::size_t b){ return (double)b/(1024.0*1024.0); };
+        std::printf("DeviceState::alloc_jet_nets: C=%d  jet_walkers=%d  rows=%zu  hidden=%d\n",
+                    jet_C, jet_walkers, rows, hidden);
+        std::printf("  jet_feat                       %8.3f MiB\n", mib(jet_feat.bytes()));
+        std::printf("  jet_h                          %8.3f MiB\n", mib(jet_h.bytes()));
+        std::printf("  jet_xi + jet_rho               %8.3f MiB\n",
+                    mib(jet_xi.bytes()+jet_rho.bytes()));
+        std::printf("  jet_orb                        %8.3f MiB\n", mib(jet_orb.bytes()));
+        std::printf("  jet ping-pong (x2)             %8.3f MiB\n",
+                    mib(jet_a.bytes()+jet_b.bytes()));
+        std::printf("  jet nets added                  %8.3f GiB\n",
+                    (double)jet_net_bytes()/(1024.0*1024*1024));
+        std::printf("  GRAND TOTAL                    %8.3f GiB  (cap %.1f GiB)\n",
+                    grand_gb, o_pool_max_gb);
+    }
+}
+std::size_t DeviceState::jet_net_bytes() const {
+    return jet_feat.bytes() + jet_h.bytes() + jet_xi.bytes() + jet_rho.bytes()
+         + jet_orb.bytes() + jet_a.bytes() + jet_b.bytes() + jet_in_f.bytes() + jet_out_f.bytes();
+}
+
+// Compute memory for jet determinant evaluation
+void DeviceState::alloc_jet_dets(bool verbose) {
+    const std::size_t C = (std::size_t)jet_C;
+    const std::size_t W = B;
+
+    Minv_batch.alloc((std::size_t)K * B * N * N);
+    inv_ptrs.alloc((std::size_t)K * B);
+    inv_info.alloc((std::size_t)K * B);
+    {
+        std::vector<double*> h_ptrs((std::size_t)K * B);
+        for (std::size_t m = 0; m < h_ptrs.size(); m++) h_ptrs[m] = (double*)(Minv_batch.d + m * (std::size_t)N * N);
+        inv_ptrs.up(h_ptrs.data(), h_ptrs.size());
+    }
+
+    jet_det.alloc(C * W * (std::size_t)K);
+    jet_psi.alloc(C * W);
+    S_jet_v.alloc(W);
+    psi_dbl.alloc(W);
+    E_kin.alloc(W);
+    l2_out.alloc(W);
+    v3n_out.alloc(W);
+    valid_jet.alloc(W);
+
+    const double grand_gb = (double)(total_bytes() + eval_bytes() + sampler_bytes()
+                                     + jet_net_bytes() + jet_det_bytes()) / (1024.0*1024.0*1024.0);
+    if (grand_gb > o_pool_max_gb && soft_cap && !g_dry_alloc) {
+        std::ostringstream oss;
+        oss << "DeviceState::alloc_jet_dets: total would be " << grand_gb << " GiB, over the "
+            << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).";
+        throw std::runtime_error(oss.str());
+    }
+
+    if (verbose) {
+        auto mib = [](std::size_t b){ return (double)b/(1024.0*1024.0); };
+        std::printf("DeviceState::alloc_jet_dets:\n");
+        std::printf("  Minv_batch (RESIDENT for Ph5) %8.3f MiB\n", mib(Minv_batch.bytes()));
+        std::printf("  getri ptr/info                %8.3f MiB\n",
+                    mib(inv_ptrs.bytes()+inv_info.bytes()));
+        std::printf("  jet_det                       %8.3f MiB\n", mib(jet_det.bytes()));
+        std::printf("  jet_psi + per-walker outputs  %8.3f MiB\n",
+                    mib(jet_psi.bytes()+S_jet_v.bytes()+psi_dbl.bytes()
+                        +E_kin.bytes()+l2_out.bytes()+v3n_out.bytes()+valid_jet.bytes()));
+        std::printf("  jet dets added                %8.3f MiB\n", mib(jet_det_bytes()));
+        std::printf("  GRAND TOTAL                   %8.3f GiB  (cap %.1f GiB)\n",
+                    grand_gb, o_pool_max_gb);
+    }
+}
+std::size_t DeviceState::jet_det_bytes() const {
+    return Minv_batch.bytes() + inv_ptrs.bytes() + inv_info.bytes()
+         + jet_det.bytes() + jet_psi.bytes() + S_jet_v.bytes() + psi_dbl.bytes()
+         + E_kin.bytes() + l2_out.bytes() + v3n_out.bytes() + valid_jet.bytes();
+}
+
+// Compute memory for energy evaluation
+void DeviceState::alloc_eval(const Ansatz& a, bool verbose) {
     const std::size_t n_h = a.h_net.params.size();
     const std::size_t n_rho = a.rho_net.params.size();
     h_net_d.build(a.h_net, 0);
@@ -312,7 +457,7 @@ void DeviceState::grow_phase3(const Ansatz& a, bool verbose) {
     }
 
     if (verbose) {
-        std::printf("DeviceState::grow_phase3: rows_max=%zu  hidden_width=%d\n", rows, hidden_width);
+        std::printf("DeviceState::alloc_eval: rows_max=%zu  hidden_width=%d\n", rows, hidden_width);
         std::printf("  x_sh + feat_in + xi + rho_out  %8.3f MiB\n",
                     (double)(x_sh.bytes()+feat_in.bytes()+xi.bytes()+rho_out.bytes())/(1024.0*1024));
         std::printf("  h_out                          %8.3f MiB\n", (double)h_out.bytes()/(1024.0*1024));
@@ -323,14 +468,38 @@ void DeviceState::grow_phase3(const Ansatz& a, bool verbose) {
                     (double)(M_batch.bytes()+dets.bytes()+S.bytes())/(1024.0*1024));
         std::printf("  batched-LU ptr/piv/info        %8.3f MiB\n",
                     (double)(lu_ptrs.bytes()+lu_info.bytes()+lu_piv.bytes())/(1024.0*1024));
-        std::printf("  PHASE 3 ADDED                  %8.3f GiB\n",
-                    (double)phase3_bytes()/(1024.0*1024*1024));
+        std::printf("  eval added                     %8.3f GiB\n",
+                    (double)eval_bytes()/(1024.0*1024*1024));
         std::printf("  TOTAL                          %8.3f GiB  (cap %.1f GiB)\n",
-                    (double)(total_bytes()+phase3_bytes())/(1024.0*1024*1024), o_pool_max_gb);
+                    (double)(total_bytes()+eval_bytes())/(1024.0*1024*1024), o_pool_max_gb);
     }
 }
+std::size_t DeviceState::eval_bytes() const {
+    return x_sh.bytes() + feat_in.bytes() + h_out.bytes() + xi.bytes()
+         + rho_out.bytes() + orb_out.bytes() + act_a.bytes() + act_b.bytes()
+         + lu_ptrs.bytes() + lu_info.bytes() + lu_piv.bytes()
+         + M_batch.bytes() + dets.bytes() + S.bytes() + fwd_in_f.bytes() + fwd_out_f.bytes();
+}
 
+// Compute memory needed for all allocations
+void DeviceState::allocate(const Ansatz& a, bool training, bool verbose) {
+    alloc_eval(a, verbose);
+    alloc_sampler(verbose);
+    alloc_jet_nets(verbose);
+    alloc_jet_dets(verbose);
+    alloc_exchange(verbose);
+    if (training) {
+        alloc_backprop(a, verbose);
+        alloc_sr(verbose);
+    }
+    alloc_stats(verbose);
+}
+std::size_t DeviceState::allocated_bytes() const {
+    return total_bytes() + eval_bytes() + sampler_bytes() + jet_net_bytes() + jet_det_bytes() + exchange_bytes() + backprop_bytes() + sr_bytes() + stats_bytes();
+}
+// ---------- //
 
+// --- Upload / Download between host and device --- //
 // Upload params to GPU
 void DeviceState::upload_params(const Ansatz& a, PinnedArray& staging) {
     staging.ensure(P * (sizeof(double) + sizeof(real)));
@@ -352,13 +521,11 @@ void DeviceState::upload_walkers(const WalkerBatch& wb, PinnedArray& staging) {
 
     staging.ensure(nb * (std::size_t)D * sizeof(real));
     real*    hr = staging.as<real>();
-    uint8_t* hb = staging.as<uint8_t>();
 
-    convert_copy(hr, wb.x.data(),    nb * (std::size_t)D); x.up(hr, nb * (std::size_t)D);
-    convert_copy(hr, wb.s.data(),    nb * (std::size_t)N); s.up(hr, nb * (std::size_t)N);
-    convert_copy(hr, wb.t.data(),    nb * (std::size_t)N); t.up(hr, nb * (std::size_t)N);
-    convert_copy(hr, wb.logp.data(), nb);                  logp.up(hr, nb);
-    std::copy(wb.valid.begin(), wb.valid.end(), hb);       valid.up(hb, nb);
+    convert_copy(hr, wb.x.data(), nb * (std::size_t)D); x.up(hr, nb * (std::size_t)D);
+    convert_copy(hr, wb.s.data(), nb * (std::size_t)N); s.up(hr, nb * (std::size_t)N);
+    convert_copy(hr, wb.t.data(), nb * (std::size_t)N); t.up(hr, nb * (std::size_t)N);
+    convert_copy(hr, wb.logp.data(), nb); logp.up(hr, nb);
 
     rng_ctr.zero();
 }
@@ -370,171 +537,10 @@ void DeviceState::download_walkers(WalkerBatch& wb, PinnedArray& staging) {
 
     staging.ensure(nb * (std::size_t)D * sizeof(real));
     real*    hr = staging.as<real>();
-    uint8_t* hb = staging.as<uint8_t>();
 
-    x.down(hr, nb * (std::size_t)D);   convert_copy(wb.x.data(),    hr, nb * (std::size_t)D);
-    s.down(hr, nb * (std::size_t)N);   convert_copy(wb.s.data(),    hr, nb * (std::size_t)N);
-    t.down(hr, nb * (std::size_t)N);   convert_copy(wb.t.data(),    hr, nb * (std::size_t)N);
-    logp.down(hr, nb);                 convert_copy(wb.logp.data(), hr, nb);
-    valid.down(hb, nb);                std::copy(hb, hb + nb, wb.valid.begin());
+    x.down(hr, nb * (std::size_t)D); convert_copy(wb.x.data(),    hr, nb * (std::size_t)D);
+    s.down(hr, nb * (std::size_t)N); convert_copy(wb.s.data(),    hr, nb * (std::size_t)N);
+    t.down(hr, nb * (std::size_t)N); convert_copy(wb.t.data(),    hr, nb * (std::size_t)N);
+    logp.down(hr, nb); convert_copy(wb.logp.data(), hr, nb);
 }
-
-std::size_t DeviceState::phase33_bytes() const {
-    return x_prop.bytes() + logp_prop.bytes() + S_prop.bytes() + S_cur.bytes()
-         + prop_idx.bytes() + s_prop.bytes() + t_prop.bytes()
-         + pick_a.bytes() + pick_b.bytes()
-         + acc.bytes() + sp_acc.bytes() + tau_acc.bytes();
-}
-
-void DeviceState::grow_phase33(bool verbose) {
-    x_prop.alloc(B * (std::size_t)D);
-    logp_prop.alloc(B);
-    S_prop.alloc(B);
-    S_cur.alloc(B);
-    prop_idx.alloc(B);
-    s_prop.alloc(B * (std::size_t)N);
-    t_prop.alloc(B * (std::size_t)N);
-    pick_a.alloc(B);
-    pick_b.alloc(B);
-    acc.alloc(B);      acc.zero();
-    sp_acc.alloc(B);   sp_acc.zero();
-    tau_acc.alloc(B);  tau_acc.zero();
-
-    if (verbose) {
-        std::printf("DeviceState::grow_phase33: sampler state %8.3f MiB  (TOTAL %.3f GiB)\n",
-                    (double)phase33_bytes()/(1024.0*1024),
-                    (double)(total_bytes()+phase3_bytes()+phase33_bytes())/(1024.0*1024*1024));
-    }
-}
-
-// Jet network size
-std::size_t DeviceState::phase4_bytes() const {
-    return jet_feat.bytes() + jet_h.bytes() + jet_xi.bytes() + jet_rho.bytes()
-         + jet_orb.bytes() + jet_a.bytes() + jet_b.bytes() + jet_in_f.bytes() + jet_out_f.bytes();
-}
-
-// 
-void DeviceState::grow_phase4(bool verbose) {
-    const std::size_t C = (std::size_t)jet_C;
-    const std::size_t rows = jet_rows; 
-    const std::size_t W = (std::size_t)jet_walkers;
-
-    // Take the largest hidden width
-    const int hidden = std::max(1, std::max(std::max(h_net_d.hidden_width, rho_net_d.hidden_width), orb_net_d.hidden_width));
-
-    // Measure memory
-    const std::size_t n_feat = C * rows * (std::size_t)(dim + 2);
-    const std::size_t n_h = C * rows * (std::size_t)m_feat;
-    const std::size_t n_xi = C * W * (std::size_t)m_feat;
-    const std::size_t n_rho = C * W * (std::size_t)K;
-    const std::size_t n_orb = C * rows * (std::size_t)(K * N);
-    const std::size_t n_pp = C * rows * (std::size_t)hidden;
-    const std::size_t want = (n_feat + n_h + n_xi + n_rho + n_orb + 2*n_pp) * sizeof(real)
-        + (fp32_forward ? (std::max(n_feat, n_xi) + std::max(std::max(n_h, n_rho), n_orb)) * sizeof(float) : 0);
-
-    const double grand_gb = (double)(total_bytes() + phase3_bytes() + phase33_bytes() + want) / (1024.0*1024.0*1024.0);
-
-    // Throw error if memory exceeds limit on allocation
-    if (grand_gb > o_pool_max_gb && soft_cap && !g_dry_alloc) {
-        std::ostringstream oss;
-        oss << "DeviceState::grow_phase4: total would be " << grand_gb << " GiB, over the "
-            << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).\n"
-            << "  Phase 4 alone wants " << (double)want/(1024.0*1024*1024) << " GiB at jet_chunk="
-            << jet_chunk << " (" << jet_walkers << " walkers).\n"
-            << "  REMEDY: set jet_chunk in constants.h to a fraction of n_walkers ("
-            << B << "). The jet pipeline is walker-independent, so chunking is\n"
-            << "  exactly equivalent -- only GEMM row counts change. jet_chunk="
-            << (B/2) << " roughly halves the figure above.";
-        throw std::runtime_error(oss.str());
-    }
-
-    // Allocate memory
-    jet_feat.alloc(n_feat);
-    jet_h.alloc(n_h);
-    jet_xi.alloc(n_xi);
-    jet_rho.alloc(n_rho);
-    jet_orb.alloc(n_orb);
-    jet_a.alloc(n_pp);
-    jet_b.alloc(n_pp);
-
-    if constexpr (fp32_forward) {
-        jet_in_f.alloc(std::max(n_feat, n_xi));
-        jet_out_f.alloc(std::max(std::max(n_h, n_rho), n_orb));
-        for (DeviceNet* dn : {&h_net_d, &rho_net_d, &orb_net_d}) {
-            dn->jin_f = jet_in_f.d;   dn->jin_f_cap = jet_in_f.n;
-            dn->jout_f = jet_out_f.d; dn->jout_f_cap = jet_out_f.n;
-        }
-    }
-
-
-    if (verbose) {
-        auto mib = [](std::size_t b){ return (double)b/(1024.0*1024.0); };
-        std::printf("DeviceState::grow_phase4: C=%d  jet_walkers=%d  rows=%zu  hidden=%d\n",
-                    jet_C, jet_walkers, rows, hidden);
-        std::printf("  jet_feat                       %8.3f MiB\n", mib(jet_feat.bytes()));
-        std::printf("  jet_h                          %8.3f MiB\n", mib(jet_h.bytes()));
-        std::printf("  jet_xi + jet_rho               %8.3f MiB\n",
-                    mib(jet_xi.bytes()+jet_rho.bytes()));
-        std::printf("  jet_orb                        %8.3f MiB\n", mib(jet_orb.bytes()));
-        std::printf("  jet ping-pong (x2)             %8.3f MiB\n",
-                    mib(jet_a.bytes()+jet_b.bytes()));
-        std::printf("  PHASE 4 ADDED                  %8.3f GiB\n",
-                    (double)phase4_bytes()/(1024.0*1024*1024));
-        std::printf("  GRAND TOTAL                    %8.3f GiB  (cap %.1f GiB)\n",
-                    grand_gb, o_pool_max_gb);
-    }
-}
-
-std::size_t DeviceState::phase42_bytes() const {
-    return Minv_batch.bytes() + inv_ptrs.bytes() + inv_info.bytes()
-         + jet_det.bytes() + jet_psi.bytes() + S_jet_v.bytes() + psi_dbl.bytes()
-         + E_kin.bytes() + l2_out.bytes() + v3n_out.bytes() + valid_jet.bytes();
-}
-
-// Memory allocation
-void DeviceState::grow_phase42(bool verbose) {
-    const std::size_t C = (std::size_t)jet_C;
-    const std::size_t W = B;
-
-    Minv_batch.alloc((std::size_t)K * B * N * N);
-    inv_ptrs.alloc((std::size_t)K * B);
-    inv_info.alloc((std::size_t)K * B);
-    {
-        std::vector<double*> h_ptrs((std::size_t)K * B);
-        for (std::size_t m = 0; m < h_ptrs.size(); m++) h_ptrs[m] = (double*)(Minv_batch.d + m * (std::size_t)N * N);
-        inv_ptrs.up(h_ptrs.data(), h_ptrs.size());
-    }
-
-    jet_det.alloc(C * W * (std::size_t)K);
-    jet_psi.alloc(C * W);
-    S_jet_v.alloc(W);
-    psi_dbl.alloc(W);
-    E_kin.alloc(W);
-    l2_out.alloc(W);
-    v3n_out.alloc(W);
-    valid_jet.alloc(W);
-
-    const double grand_gb = (double)(total_bytes() + phase3_bytes() + phase33_bytes()
-                                     + phase4_bytes() + phase42_bytes()) / (1024.0*1024.0*1024.0);
-    if (grand_gb > o_pool_max_gb && soft_cap && !g_dry_alloc) {
-        std::ostringstream oss;
-        oss << "DeviceState::grow_phase42: total would be " << grand_gb << " GiB, over the "
-            << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).";
-        throw std::runtime_error(oss.str());
-    }
-
-    if (verbose) {
-        auto mib = [](std::size_t b){ return (double)b/(1024.0*1024.0); };
-        std::printf("DeviceState::grow_phase42:\n");
-        std::printf("  Minv_batch (RESIDENT for Ph5) %8.3f MiB\n", mib(Minv_batch.bytes()));
-        std::printf("  getri ptr/info                %8.3f MiB\n",
-                    mib(inv_ptrs.bytes()+inv_info.bytes()));
-        std::printf("  jet_det                       %8.3f MiB\n", mib(jet_det.bytes()));
-        std::printf("  jet_psi + per-walker outputs  %8.3f MiB\n",
-                    mib(jet_psi.bytes()+S_jet_v.bytes()+psi_dbl.bytes()
-                        +E_kin.bytes()+l2_out.bytes()+v3n_out.bytes()+valid_jet.bytes()));
-        std::printf("  PHASE 4.2 ADDED               %8.3f MiB\n", mib(phase42_bytes()));
-        std::printf("  GRAND TOTAL                   %8.3f GiB  (cap %.1f GiB)\n",
-                    grand_gb, o_pool_max_gb);
-    }
-}
+// ------- //

@@ -1,4 +1,4 @@
-#include "monte_carlo.h"
+#include "config.h"
 #include "constants.h"
 
 #include <iostream>

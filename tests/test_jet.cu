@@ -44,7 +44,7 @@ static void test_seeds(const Ansatz& a) {
     std::mt19937_64 rng(11);
     std::vector<double> hx, hs, ht; rand_cfg(B, hx, hs, ht, rng);
 
-    DeviceState ds(a,false); ds.grow_phase3(a,false); ds.grow_phase33(false); ds.grow_phase4(false);
+    DeviceState ds(a,false); ds.alloc_eval(a,false); ds.alloc_sampler(false); ds.alloc_jet_nets(false);
     std::vector<real> tx(hx.begin(),hx.end()), tsp(hs.begin(),hs.end()), tt(ht.begin(),ht.end());
     ds.x.up(tx.data(),tx.size()); ds.s.up(tsp.data(),tsp.size()); ds.t.up(tt.data(),tt.size());
     build_jet_feat(ds.x.d, ds.s.d, ds.t.d, ds.jet_feat.d, B);
@@ -154,7 +154,7 @@ static void test_jet_oracle(const Ansatz& a, cublasHandle_t handle) {
     std::mt19937_64 rng(90210);
     std::vector<double> hx, hs, ht; rand_cfg(B, hx, hs, ht, rng);
 
-    DeviceState ds(a,false); ds.grow_phase3(a,false); ds.grow_phase33(false); ds.grow_phase4(false);
+    DeviceState ds(a,false); ds.alloc_eval(a,false); ds.alloc_sampler(false); ds.alloc_jet_nets(false);
     PinnedArray st; ds.upload_params(a, st);
     std::vector<real> tx(hx.begin(),hx.end()), tsp(hs.begin(),hs.end()), tt(ht.begin(),ht.end());
     ds.x.up(tx.data(),tx.size()); ds.s.up(tsp.data(),tsp.size()); ds.t.up(tt.data(),tt.size());

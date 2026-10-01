@@ -1,5 +1,4 @@
 
-#include "monte_carlo.h"
 #include "physics.h"
 #include "constants.h"
 #include "util.h"
@@ -50,7 +49,7 @@ void ADAM(const std::vector<double>& grad, std::vector<double>& m, std::vector<d
 SRStepLog SR_step(const std::vector<double>& grad, const std::vector<double>& O_pool, const std::vector<double>& O_exp, Ansatz& a, SROp& sr_op, std::vector<double>& delta, int iter, std::size_t n_params, ThreadPool* pool, const double* d_rms, std::size_t n_samples, const uint8_t* valid_pool, std::size_t n_valid, std::vector<double>& M_inv_diag, std::vector<double>& S_delta) {
     // Exponentially decaying lambda until floor hit, same with learning rate
     double lambda_t = std::max(sr_lambda0 * std::pow(sr_rho, iter), sr_lambda_min);
-    double sr_lr = std::max(sr_eta * std::pow(0.999, iter), 0.001);//  * std::cos(iter * PI / (2 * N_sr)); // 
+    double sr_lr = std::max(sr_eta * std::pow(0.999, iter), 0.001);
     
     // Intialize the SR matrix
     sr_op.init(O_pool, O_exp, n_samples, n_params, lambda_t, sr_eps, pool, d_rms, valid_pool, n_valid);
@@ -264,14 +263,7 @@ DescentResult descent(Ansatz& a) {
 #ifdef VMC_CUDA
     if (B_plan == 0) gpu_select_device(true);
     DeviceState ds(a, true, B_plan);
-    ds.grow_phase3(a);
-    ds.grow_phase33();
-    ds.grow_phase4();
-    ds.grow_phase42();
-    ds.grow_phase43();
-    ds.grow_phase5(a);
-    ds.grow_phase52();
-    ds.grow_phase53();
+    ds.allocate(a, true);
     PinnedArray staging;
     cublasHandle_t cublas;
     if (cublasCreate(&cublas) != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("descent: cublasCreate failed");
@@ -559,12 +551,7 @@ DescentResult evaluate_frozen(Ansatz& a) {
 #ifdef VMC_CUDA
     gpu_select_device(true);
     DeviceState ds(a);
-    ds.grow_phase3(a);
-    ds.grow_phase33();
-    ds.grow_phase4();
-    ds.grow_phase42();
-    ds.grow_phase43();
-    ds.grow_phase53();
+    ds.allocate(a, false);
     PinnedArray staging;
     cublasHandle_t cublas;
     if (cublasCreate(&cublas) != CUBLAS_STATUS_SUCCESS)

@@ -54,8 +54,8 @@ static void rand_cfg(int B, std::vector<double>& hx, std::vector<double>& hs,
 struct Dev {
     DeviceState ds;
     explicit Dev(const Ansatz& a) : ds(a, false) {
-        ds.grow_phase3(a, false); ds.grow_phase33(false);
-        ds.grow_phase4(false);    ds.grow_phase42(false);
+        ds.alloc_eval(a, false); ds.alloc_sampler(false);
+        ds.alloc_jet_nets(false);    ds.alloc_jet_dets(false);
     }
     void push(const std::vector<double>& hx, const std::vector<double>& hs,
               const std::vector<double>& ht, const Ansatz& a) {

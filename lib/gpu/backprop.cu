@@ -200,7 +200,7 @@ static double* o_rows_fp64(DeviceState& ds, T* pool_rows) {
 // Evaluate full Os 
 void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cudaStream_t stream, int chunk) {
     if (B <= 0) return;
-    if (ds.cache_rho.rows_cap == 0) throw std::runtime_error("assemble_O_batch: grow_phase5 has not run");
+    if (ds.cache_rho.rows_cap == 0) throw std::runtime_error("assemble_O_batch: alloc_backprop has not run");
     if ((std::size_t)(r + 1) * (std::size_t)B > ds.Ns_max) throw std::runtime_error("assemble_O_batch: record row beyond O_pool");
     const int C_req = (chunk > 0) ? chunk : B;
     const int C = fp32_opool ? std::min(C_req, opool_stage_rows) : C_req;

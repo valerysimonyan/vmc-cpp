@@ -65,7 +65,7 @@ endif()
 set(VMC_SOURCES
     lib/walkers.cpp lib/physics.cpp lib/slater.cpp lib/util.cpp
     lib/pool.cpp    lib/sr.cpp      lib/cg.cpp     lib/descent.cpp lib/descent_mg.cpp
-    lib/monte_carlo.cpp lib/checkpoint.cpp)
+    lib/config.cpp lib/checkpoint.cpp)
 
 add_library(vmc_core STATIC ${VMC_SOURCES})
 if(VMC_REAL32)
@@ -125,7 +125,7 @@ endif()
 
 add_executable(main main.cpp)
 target_link_libraries(main PRIVATE vmc_core)
-add_executable(frozen_eval tests/frozen_eval_main.cpp)
+add_executable(frozen_eval tools/frozen_eval.cpp)
 target_link_libraries(frozen_eval PRIVATE vmc_core)
 # ---------------------------------------------------------------------------
 # Tests

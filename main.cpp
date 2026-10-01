@@ -3,7 +3,7 @@
 #include <fstream>
 #include <string>
 
-#include "lib/monte_carlo.h"
+#include "lib/config.h"
 #include "lib/physics.h"
 #include "lib/descent.h"
 #include "lib/constants.h"

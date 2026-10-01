@@ -31,8 +31,8 @@ static double rel(double got, double want) {
 struct Dev {
     DeviceState ds;
     explicit Dev(const Ansatz& a) : ds(a, false) {
-        ds.grow_phase3(a, false); ds.grow_phase33(false); ds.grow_phase4(false);
-        ds.grow_phase42(false);   ds.grow_phase43(false); ds.grow_phase5(a, false);
+        ds.alloc_eval(a, false); ds.alloc_sampler(false); ds.alloc_jet_nets(false);
+        ds.alloc_jet_dets(false);   ds.alloc_exchange(false); ds.alloc_backprop(a, false);
     }
     void push(const std::vector<double>& hx, const std::vector<double>& hs, const std::vector<double>& ht, const Ansatz& a) {
         PinnedArray st; ds.upload_params(a, st);

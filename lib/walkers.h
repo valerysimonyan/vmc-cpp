@@ -28,10 +28,7 @@ double usym(WalkerBatch& wb, int w, double a);
 
 int uint_below(WalkerBatch& wb, int w, int n);
 
-
 void init_batch(WalkerBatch& wb, const Ansatz& a, ThreadPool* pool, std::vector<Workspace>& wss);
-
-void recenter_batch(WalkerBatch& wb, ThreadPool* pool);
 
 void refresh_logp(WalkerBatch& wb, const Ansatz& a, ThreadPool* pool, std::vector<Workspace>& wss);
 
@@ -49,10 +46,6 @@ struct BatchStats {
     std::vector<double> r2w_sum;  // B, valid sample r2 sums per walker
     std::vector<int> nw;          // B, valid counts per walker
 };
-
-void chunk_range_pub(int B, int n_workers, int th, int& w0, int& w1);
-
-double walker_r2_pub(const double* xw);
 
 void record_one_walker(WalkerBatch& wb, const Ansatz& a, Workspace& ws, std::vector<double>& O, int w, int r, std::vector<double>& E_pool, std::vector<double>& O_pool, std::vector<uint8_t>& valid_pool, BatchStats& bs);
 

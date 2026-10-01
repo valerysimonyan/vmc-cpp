@@ -139,7 +139,6 @@ static void test_device_state(const Ansatz& a) {
           B * (std::size_t)D * sizeof(real)               // x
         + B * (std::size_t)N * sizeof(real) * 2           // s, t
         + B * sizeof(real)                                // logp
-        + B * sizeof(uint8_t)                             // valid
         + B * sizeof(unsigned long long)                  // rng_ctr
         + P * sizeof(real)                                // params
         + (fp32_forward ? P * sizeof(float) : 0)          // params_f, the float mirror (6.3)
@@ -160,12 +159,7 @@ static void test_walker_roundtrip(const Ansatz& a) {
     init_batch(wb, a, &pool, wss);
     therm_batch(wb, a, step0, 5, &pool, wss);
 
-    // valid[] is not written by therm_batch; set a pattern so the round trip
-    // has something to preserve.
-    for (int w = 0; w < wb.B; w++) wb.valid[w] = (uint8_t)(w % 2);
-
     const std::vector<double>  x0 = wb.x,  s0 = wb.s, t0 = wb.t, lp0 = wb.logp;
-    const std::vector<uint8_t> v0 = wb.valid;
 
     DeviceState ds(a, /*verbose=*/false);
     PinnedArray staging;
@@ -176,7 +170,6 @@ static void test_walker_roundtrip(const Ansatz& a) {
     std::fill(wb.s.begin(), wb.s.end(), -7.0);
     std::fill(wb.t.begin(), wb.t.end(), -7.0);
     std::fill(wb.logp.begin(), wb.logp.end(), -7.0);
-    std::fill(wb.valid.begin(), wb.valid.end(), 0xAB);
 
     ds.download_walkers(wb, staging);
 
@@ -184,7 +177,6 @@ static void test_walker_roundtrip(const Ansatz& a) {
     CHECK(vec_roundtrip_ok(wb.s,    s0),  "walker round trip: s differs");
     CHECK(vec_roundtrip_ok(wb.t,    t0),  "walker round trip: t differs");
     CHECK(vec_roundtrip_ok(wb.logp, lp0), "walker round trip: logp differs");
-    CHECK(wb.valid == v0,                 "walker round trip: valid differs");
 
     // s and t are exactly +/-1 in every mode: they are quantum numbers, and a
     // narrowing that perturbed them would be a real bug even in FP32.
@@ -417,7 +409,7 @@ static void test_net_oracle(const Ansatz& a, cublasHandle_t handle) {
         }
 
     DeviceState ds(a, /*verbose=*/false);
-    ds.grow_phase3(a, /*verbose=*/true);
+    ds.alloc_eval(a, /*verbose=*/true);
     PinnedArray staging;
     ds.upload_params(a, staging);
 
@@ -516,7 +508,7 @@ static void test_net_determinism(const Ansatz& a, cublasHandle_t handle) {
         }
 
     DeviceState ds(a, false);
-    ds.grow_phase3(a, false);
+    ds.alloc_eval(a, false);
     PinnedArray staging;
     ds.upload_params(a, staging);
     std::vector<real> tx(hx.begin(), hx.end()), tsp(hs.begin(), hs.end()), tt(ht.begin(), ht.end());
@@ -586,7 +578,7 @@ static void test_logpsi_oracle(const Ansatz& a, cublasHandle_t handle) {
     std::vector<double> hx, hs, ht;
     make_configs(B, hx, hs, ht, rng);
 
-    DeviceState ds(a, false); ds.grow_phase3(a, false);
+    DeviceState ds(a, false); ds.alloc_eval(a, false);
     PinnedArray st; ds.upload_params(a, st);
     upload_configs(ds, hx, hs, ht);
 
@@ -637,7 +629,7 @@ static void test_logpsi_nodes(const Ansatz& a, cublasHandle_t handle) {
     std::vector<double> hx, hs, ht;
     make_configs(B, hx, hs, ht, rng, every);
 
-    DeviceState ds(a, false); ds.grow_phase3(a, false);
+    DeviceState ds(a, false); ds.alloc_eval(a, false);
     PinnedArray st; ds.upload_params(a, st);
     upload_configs(ds, hx, hs, ht);
     eval_logp_batch(ds, handle, B);
@@ -687,7 +679,7 @@ static void test_dets_isolated(const Ansatz& a, cublasHandle_t handle) {
     std::vector<double> hx, hs, ht;
     make_configs(B, hx, hs, ht, rng);
 
-    DeviceState ds(a, false); ds.grow_phase3(a, false);
+    DeviceState ds(a, false); ds.alloc_eval(a, false);
     PinnedArray st; ds.upload_params(a, st);
     upload_configs(ds, hx, hs, ht);
 
@@ -761,7 +753,7 @@ static void test_assembly_orientation(const Ansatz& a, cublasHandle_t handle) {
     std::vector<double> hx, hs, ht;
     make_configs(B, hx, hs, ht, rng);
 
-    DeviceState ds(a, false); ds.grow_phase3(a, false);
+    DeviceState ds(a, false); ds.alloc_eval(a, false);
     PinnedArray st; ds.upload_params(a, st);
     upload_configs(ds, hx, hs, ht);
 
@@ -874,7 +866,7 @@ static void test_table_oracle(const Ansatz& a, cublasHandle_t handle) {
     std::vector<double> hx, hs, ht;
     make_configs(B, hx, hs, ht, rng);
 
-    DeviceState ds(a, false); ds.grow_phase3(a, false);
+    DeviceState ds(a, false); ds.alloc_eval(a, false);
     PinnedArray st; ds.upload_params(a, st);
     upload_configs(ds, hx, hs, ht);
 
@@ -957,7 +949,7 @@ static void test_sampler_determinism(const Ansatz& a, cublasHandle_t handle) {
 
     for (int run = 0; run < 2; run++) {
         WalkerBatch wb = wb0;                       // identical starting state
-        DeviceState ds(a, false); ds.grow_phase3(a, false); ds.grow_phase33(false);
+        DeviceState ds(a, false); ds.alloc_eval(a, false); ds.alloc_sampler(false);
         PinnedArray st; ds.upload_params(a, st);
         upload_and_reset(ds, wb, st);
         // logp must be recomputed on the device: upload_walkers brings the CPU's
@@ -1019,7 +1011,7 @@ static void test_sampler_replay(const Ansatz& a, cublasHandle_t handle) {
     WalkerBatch wb;
     seed_walkers(wb, a, B, pool, wss);
 
-    DeviceState ds(a, false); ds.grow_phase3(a, false); ds.grow_phase33(false);
+    DeviceState ds(a, false); ds.alloc_eval(a, false); ds.alloc_sampler(false);
     PinnedArray st; ds.upload_params(a, st);
     upload_and_reset(ds, wb, st);
     eval_logp_batch(ds, handle, B);
@@ -1090,7 +1082,7 @@ static void test_logp_cache_integrity(const Ansatz& a, cublasHandle_t handle) {
     WalkerBatch wb;
     seed_walkers(wb, a, B, pool, wss);
 
-    DeviceState ds(a, false); ds.grow_phase3(a, false); ds.grow_phase33(false);
+    DeviceState ds(a, false); ds.alloc_eval(a, false); ds.alloc_sampler(false);
     PinnedArray st; ds.upload_params(a, st);
     upload_and_reset(ds, wb, st);
     eval_logp_batch(ds, handle, B);
@@ -1129,7 +1121,7 @@ static void test_acceptance_rates(const Ansatz& a, cublasHandle_t handle) {
     WalkerBatch wb;
     seed_walkers(wb, a, B, pool, wss);
 
-    DeviceState ds(a, false); ds.grow_phase3(a, false); ds.grow_phase33(false);
+    DeviceState ds(a, false); ds.alloc_eval(a, false); ds.alloc_sampler(false);
     PinnedArray st; ds.upload_params(a, st);
     upload_and_reset(ds, wb, st);
     eval_logp_batch(ds, handle, B);

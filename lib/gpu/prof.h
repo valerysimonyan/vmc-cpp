@@ -42,8 +42,7 @@ public:
     // Print to stdout and append to `file` (created if absent).
     void report(const char* file, int B, int records, std::size_t P, const char* tag) const;
 
-    void reset();                              // drop accumulators (warm-up)
-    int  iterations() const { return iters_; }
+    void reset(); // drop accumulators (warm-up)
 
     ~GpuProf();
 

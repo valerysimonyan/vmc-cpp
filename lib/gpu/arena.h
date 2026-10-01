@@ -36,7 +36,6 @@ struct DeviceState {
     DeviceArray<real> s;         // B*N
     DeviceArray<real> t;         // B*N
     DeviceArray<real> logp;      // B
-    DeviceArray<uint8_t> valid;  // B
     
     DeviceArray<unsigned long long> rng_ctr;  // B
     
@@ -55,7 +54,7 @@ struct DeviceState {
     
     std::size_t B = 0, P = 0, Ns_max = 0;
 
-    std::size_t rows_max = 0;   // B * N * rows_per_combo: phase-3 row capacity (was the compile-time rows_max_phase3)
+    std::size_t rows_max = 0;   // B * N * rows_per_combo:row capacity of the eval buffers
     int ex_w = 0;               // walkers per exchange chunk (was ex_walkers)
     bool soft_cap = true;       // o_pool_max_gb checks; off when the planner sized B from actual free memory
 
@@ -133,35 +132,39 @@ struct DeviceState {
     DeviceArray<int> nw_d;                           // B
     DeviceArray<unsigned char> pack_d;               // Ns_max*9 + B*60 bytes
 
-    void grow_phase53(bool verbose = true);
-    std::size_t phase53_bytes() const;
-
-    void grow_phase52(bool verbose = true);
-    std::size_t phase52_bytes() const;
-
-    void grow_phase5(const Ansatz& a, bool verbose = true);
-    std::size_t phase5_bytes() const;
-
-    void grow_phase43(bool verbose = true);
-    std::size_t phase43_bytes() const;
-
-    void grow_phase42(bool verbose = true);
-    std::size_t phase42_bytes() const;
-    
-    void grow_phase33(bool verbose = true);
-    std::size_t phase33_bytes() const;
-    
-    void grow_phase4(bool verbose = true);
-    std::size_t phase4_bytes() const;
-
     DeviceNet h_net_d, rho_net_d, orb_net_d;
-
     explicit DeviceState(const Ansatz& a, bool verbose = true, std::size_t B_walkers = 0);
 
+    // --- Allocate memory for the various device arrays, with optional verbose output --- //
     std::size_t total_bytes() const;
 
-    std::size_t phase3_bytes() const;
-    void grow_phase3(const Ansatz& a, bool verbose = true);
+    void alloc_stats(bool verbose = true);
+    std::size_t stats_bytes() const;
+
+    void alloc_sr(bool verbose = true);
+    std::size_t sr_bytes() const;
+
+    void alloc_backprop(const Ansatz& a, bool verbose = true);
+    std::size_t backprop_bytes() const;
+
+    void alloc_exchange(bool verbose = true);
+    std::size_t exchange_bytes() const;
+
+    void alloc_sampler(bool verbose = true);
+    std::size_t sampler_bytes() const;
+    
+    void alloc_jet_nets(bool verbose = true);
+    std::size_t jet_net_bytes() const;
+
+    void alloc_jet_dets(bool verbose = true);
+    std::size_t jet_det_bytes() const;
+
+    void alloc_eval(const Ansatz& a, bool verbose = true);
+    std::size_t eval_bytes() const;
+    
+    void allocate(const Ansatz& a, bool training, bool verbose = true);
+    std::size_t allocated_bytes() const; 
+    // ------- //
 
     void upload_params(const Ansatz& a, PinnedArray& staging);
 

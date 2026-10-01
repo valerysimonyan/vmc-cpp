@@ -6,8 +6,6 @@
 #include <cmath>
 #include <limits>
 
-
-
 void WalkerBatch::init(int B_) {
     B = B_;
     x.assign((std::size_t)B * D, 0.0);
@@ -15,7 +13,6 @@ void WalkerBatch::init(int B_) {
     t.assign((std::size_t)B * N, 0.0);
     
     logp.assign(B, 0.0);
-    valid.assign(B, 0);
     acc.assign(B, 0);
     sp_acc.assign(B, 0);
     tau_acc.assign(B, 0);
@@ -86,17 +83,6 @@ void init_batch(WalkerBatch& wb, const Ansatz& a, ThreadPool* pool, std::vector<
         }
     });
     refresh_logp(wb, a, pool, wss);
-}
-
-// Recenter walker batch by batch
-void recenter_batch(WalkerBatch& wb, ThreadPool* pool){
-    int B = wb.B;
-    int n_workers = pool -> n_workers();
-    pool -> run([&](int th) {
-        int w0, w1;
-        chunk_range(B, n_workers, th, w0, w1);
-        for (int w = w0; w < w1; w++) recenter_walker(&wb.x[(std::size_t)w * D]);
-    });
 }
 
 // Evaluate log|Ψ| for each walker 
@@ -271,14 +257,6 @@ static double walker_r2(const double* xw) {
         }
     }
     return r2 / N;
-}
-
-void chunk_range_pub(int B, int n_workers, int th, int& w0, int& w1) {
-    chunk_range(B, n_workers, th, w0, w1);
-}
-
-double walker_r2_pub(const double* xw) {
-    return walker_r2(xw);
 }
 
 // Take measurement from one walker

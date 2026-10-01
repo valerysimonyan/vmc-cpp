@@ -40,8 +40,8 @@ static std::size_t bitdiff(const std::vector<T>& a, const std::vector<T>& b) {
 struct Dev {
     DeviceState ds;
     explicit Dev(const Ansatz& a) : ds(a, false) {
-        ds.grow_phase3(a, false); ds.grow_phase33(false); ds.grow_phase4(false);
-        ds.grow_phase42(false);   ds.grow_phase43(false);
+        ds.alloc_eval(a, false); ds.alloc_sampler(false); ds.alloc_jet_nets(false);
+        ds.alloc_jet_dets(false);   ds.alloc_exchange(false);
     }
 };
 

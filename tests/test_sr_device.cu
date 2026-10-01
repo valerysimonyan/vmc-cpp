@@ -195,8 +195,8 @@ static void test_sr_real(cublasHandle_t h, ThreadPool& pool, std::vector<Workspa
     const std::size_t P = a.n_params(), Ns = (std::size_t)B * records;
 
     DeviceState ds(a, false);
-    ds.grow_phase3(a, false); ds.grow_phase33(false); ds.grow_phase4(false);
-    ds.grow_phase42(false);   ds.grow_phase43(false); ds.grow_phase5(a, false); ds.grow_phase52(false);
+    ds.alloc_eval(a, false); ds.alloc_sampler(false); ds.alloc_jet_nets(false);
+    ds.alloc_jet_dets(false);   ds.alloc_exchange(false); ds.alloc_backprop(a, false); ds.alloc_sr(false);
     PinnedArray st; ds.upload_params(a, st);
     WalkerBatch wb; wb.init(B); init_batch(wb, a, &pool, wss);
     upload_and_reset(ds, wb, st);
