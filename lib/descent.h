@@ -37,4 +37,6 @@ void compute_obs(const BatchStats& bs, DescentResult& r, std::size_t P, const st
 
 DescentResult descent(Ansatz& a);
 
+DescentResult descent_mg(Ansatz& a); 
+
 DescentResult evaluate_frozen(Ansatz& a);

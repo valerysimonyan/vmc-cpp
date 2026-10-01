@@ -142,7 +142,7 @@ inline constexpr int eval_iters = 50;              // Frozen-eval sampling itera
 inline constexpr int ckpt_every = 100;             // Take a checkpoint every N descent iterations
 
 // Settings for reports to BENCH.md
-inline constexpr bool prof_enabled     = true;
+inline constexpr bool prof_enabled     = false;
 inline constexpr int  prof_max_depth   = 4;        // ranges nested deeper than this are not measured
 inline constexpr int  prof_report_every = 100;     // iterations between reports
 inline constexpr const char* prof_report_file = "BENCH.md";

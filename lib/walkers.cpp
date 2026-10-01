@@ -1,5 +1,6 @@
 #include "walkers.h"
 #include "envelope.h"
+#include "seed.h"
 
 #include <algorithm>
 #include <cmath>
@@ -22,7 +23,7 @@ void WalkerBatch::init(int B_) {
     // Populate rng with random seeds depending on index
     rng.clear();
     rng.reserve(B);
-    for (int w = 0; w < B; w++) rng.emplace_back(rng_seed ^ splitmix64((unsigned long long)w));
+    for (int w = 0; w < B; w++) rng.emplace_back(vmc_seed() ^ splitmix64((unsigned long long)w));
 }
 
 // Draw from uniform dist 0, 1

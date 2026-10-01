@@ -24,10 +24,13 @@ std::size_t DeviceState::total_bytes() const {
             + E_pool.bytes() + O_pool.bytes() + valid_pool.bytes() + params_f.bytes();
 }
 
-DeviceState::DeviceState(const Ansatz& a, bool verbose) {
-    B = (std::size_t)n_walkers;
+DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers) {
+    B = B_walkers ? B_walkers : (std::size_t)n_walkers;
+    soft_cap = (B_walkers == 0);
     P = a.n_params();
-    Ns_max = (std::size_t) n_walkers * (std::size_t)records_per_iter_max;
+    Ns_max = B * (std::size_t)records_per_iter_max;
+    rows_max = B * (std::size_t)N * (std::size_t)rows_per_combo;
+    ex_w = (int)(rows_max / (std::size_t)(ex_types * ex_npairs));
 
     // Check for issues with flattening parameters
     const std::size_t bad = check_param_layout(a);
@@ -42,11 +45,11 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose) {
     // Check if we're over the O_pool data limit
     const double o_pool_gb = (double)Ns_max * (double)P * sizeof(opool_t)
                              / (1024.0 * 1024.0 * 1024.0);
-    if (o_pool_gb > o_pool_max_gb) {
+    if (o_pool_gb > o_pool_max_gb && soft_cap && !g_dry_alloc) {
         std::ostringstream oss;
         oss << "DeviceState: O_pool would need " << o_pool_gb << " GiB, over the "
             << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).\n"
-            << "  Ns_max = " << Ns_max << " (n_walkers " << n_walkers
+            << "  Ns_max = " << Ns_max << "  (walkers " << B
             << " x records_per_iter_max " << records_per_iter_max << "), P = " << P
             << ".\n  Reduce walker_per_th, records_per_iter, or the network widths.";
         throw std::runtime_error(oss.str());
@@ -172,7 +175,7 @@ void DeviceState::grow_phase5(const Ansatz& a, bool verbose) {
     cache_h.alloc(h_net_d, rows);
     cache_rho.alloc(rho_net_d, B);
     cache_orb.alloc(orb_net_d, rows);
-
+    
     int widest = 0;
     std::size_t biggest_W = 0;
     for (const DeviceNet* dn : {&h_net_d, &rho_net_d, &orb_net_d})
@@ -188,7 +191,7 @@ void DeviceState::grow_phase5(const Ansatz& a, bool verbose) {
 
     const double grand_gb = (double)(total_bytes() + phase3_bytes() + phase33_bytes() + phase4_bytes()
                                      + phase42_bytes() + phase43_bytes() + phase5_bytes()) / (1024.0*1024.0*1024.0);
-    if (grand_gb > o_pool_max_gb) {
+    if (grand_gb > o_pool_max_gb && soft_cap && !g_dry_alloc) {
         std::ostringstream oss;
         oss << "DeviceState::grow_phase5: total would be " << grand_gb << " GiB, over the "
             << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).";
@@ -213,8 +216,8 @@ std::size_t DeviceState::phase43_bytes() const {
 
 void DeviceState::grow_phase43(bool verbose) {
     const std::size_t per_w = (std::size_t)ex_types * ex_npairs;
-    const std::size_t slots_chunk = (std::size_t)ex_walkers * per_w;
-    if (ex_walkers < 1 || slots_chunk > rows_max_phase3)
+    const std::size_t slots_chunk = (std::size_t)ex_w * per_w;
+    if (ex_w < 1 || slots_chunk > rows_max)
         throw std::runtime_error("DeviceState::grow_phase43: ex_walkers chunk does not fit the Phase 3 ping-pong");
 
     dets_psi.alloc((std::size_t)K * B);
@@ -237,7 +240,7 @@ void DeviceState::grow_phase43(bool verbose) {
 
     const double grand_gb = (double)(total_bytes() + phase3_bytes() + phase33_bytes() + phase4_bytes()
                                      + phase42_bytes() + phase43_bytes()) / (1024.0*1024.0*1024.0);
-    if (grand_gb > o_pool_max_gb) {
+    if (grand_gb > o_pool_max_gb && soft_cap && !g_dry_alloc) {
         std::ostringstream oss;
         oss << "DeviceState::grow_phase43: total would be " << grand_gb << " GiB, over the "
             << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).";
@@ -247,7 +250,7 @@ void DeviceState::grow_phase43(bool verbose) {
     if (verbose) {
         auto mib = [](std::size_t b){ return (double)b/(1024.0*1024.0); };
         std::printf("DeviceState::grow_phase43: npairs=%d  slot chunk=%d walkers (%zu rows)\n",
-                    ex_npairs, ex_walkers, slots_chunk);
+                    ex_npairs, ex_w, slots_chunk);
         std::printf("  dets_psi + xi_psi + S0          %8.3f MiB\n", mib(dets_psi.bytes()+xi_psi.bytes()+S0.bytes()));
         std::printf("  xi_swap + rho_swap (chunked)    %8.3f MiB\n", mib(xi_swap.bytes()+rho_swap.bytes()));
         std::printf("  S_swap + ex_active (full batch) %8.3f MiB\n", mib(S_swap.bytes()+ex_active.bytes()));
@@ -275,7 +278,7 @@ void DeviceState::grow_phase3(const Ansatz& a, bool verbose) {
     const int max_width = std::max(std::max(h_net_d.max_width, rho_net_d.max_width), orb_net_d.max_width);
     const int hidden_width = std::max(1, std::max(std::max(h_net_d.hidden_width, rho_net_d.hidden_width), orb_net_d.hidden_width));
 
-    const std::size_t rows = rows_max_phase3;
+    const std::size_t rows = rows_max;
 
     // Allocate memory
     x_sh.alloc(B * (std::size_t)D);
@@ -432,16 +435,16 @@ void DeviceState::grow_phase4(bool verbose) {
     const double grand_gb = (double)(total_bytes() + phase3_bytes() + phase33_bytes() + want) / (1024.0*1024.0*1024.0);
 
     // Throw error if memory exceeds limit on allocation
-    if (grand_gb > o_pool_max_gb) {
+    if (grand_gb > o_pool_max_gb && soft_cap && !g_dry_alloc) {
         std::ostringstream oss;
         oss << "DeviceState::grow_phase4: total would be " << grand_gb << " GiB, over the "
             << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).\n"
             << "  Phase 4 alone wants " << (double)want/(1024.0*1024*1024) << " GiB at jet_chunk="
             << jet_chunk << " (" << jet_walkers << " walkers).\n"
             << "  REMEDY: set jet_chunk in constants.h to a fraction of n_walkers ("
-            << n_walkers << "). The jet pipeline is walker-independent, so chunking is\n"
+            << B << "). The jet pipeline is walker-independent, so chunking is\n"
             << "  exactly equivalent -- only GEMM row counts change. jet_chunk="
-            << (n_walkers/2) << " roughly halves the figure above.";
+            << (B/2) << " roughly halves the figure above.";
         throw std::runtime_error(oss.str());
     }
 
@@ -513,7 +516,7 @@ void DeviceState::grow_phase42(bool verbose) {
 
     const double grand_gb = (double)(total_bytes() + phase3_bytes() + phase33_bytes()
                                      + phase4_bytes() + phase42_bytes()) / (1024.0*1024.0*1024.0);
-    if (grand_gb > o_pool_max_gb) {
+    if (grand_gb > o_pool_max_gb && soft_cap && !g_dry_alloc) {
         std::ostringstream oss;
         oss << "DeviceState::grow_phase42: total would be " << grand_gb << " GiB, over the "
             << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).";

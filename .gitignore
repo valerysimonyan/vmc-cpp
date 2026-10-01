@@ -27,5 +27,6 @@
 !/tests/*.cpp
 !/tests/*.cu
 
+# python stuff
 !/plot_training.py
 !/run_status.py

@@ -30,7 +30,7 @@ static cudaGraph_t capture(SweepGraphs& g, cublasHandle_t handle, const char* wh
         throw std::runtime_error(std::string("sweep graph: binding cuBLAS stream/workspace failed before capturing ") + what);
 
     graph_capturing() = true;
-    CUDA_CHECK(cudaStreamBeginCapture(g.stream, cudaStreamCaptureModeGlobal));
+    CUDA_CHECK(cudaStreamBeginCapture(g.stream, cudaStreamCaptureModeThreadLocal));
     cudaGraph_t graph = nullptr;
     try {
         body(g.stream);

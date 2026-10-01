@@ -55,6 +55,10 @@ struct DeviceState {
     
     std::size_t B = 0, P = 0, Ns_max = 0;
 
+    std::size_t rows_max = 0;   // B * N * rows_per_combo: phase-3 row capacity (was the compile-time rows_max_phase3)
+    int ex_w = 0;               // walkers per exchange chunk (was ex_walkers)
+    bool soft_cap = true;       // o_pool_max_gb checks; off when the planner sized B from actual free memory
+
     DeviceArray<real> x_sh;          // B*D
     DeviceArray<real> feat_in;       // rows_max x (dim+2)
     DeviceArray<real> h_out;         // rows_max x m_feat
@@ -152,7 +156,7 @@ struct DeviceState {
 
     DeviceNet h_net_d, rho_net_d, orb_net_d;
 
-    explicit DeviceState(const Ansatz& a, bool verbose = true);
+    explicit DeviceState(const Ansatz& a, bool verbose = true, std::size_t B_walkers = 0);
 
     std::size_t total_bytes() const;
 

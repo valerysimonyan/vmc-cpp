@@ -68,7 +68,7 @@ VMC_HD inline T jas_basis(int m, T s, T& d1, T& d2) {
         const T q = s + T(jas_R * jas_R);
         const T g = T(jas_R) / sqrt(q);
         d1 = T(-0.5) * g / q;
-        d1 = T(0.75) * g / (q * q);
+        d2 = T(0.75) * g / (q * q);
         return g;
     }
     // Rest of the Jastrow factors are just Gaussians, for now with what seem to be random widths

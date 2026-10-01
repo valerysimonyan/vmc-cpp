@@ -44,8 +44,8 @@ int eval_local_E_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a,
         }
 
         const int per_w = ex_types * ex_npairs;
-        for (int w_off = 0; w_off < B; w_off += ex_walkers) {
-            const int Bc = std::min((int)ex_walkers, B - w_off);
+        for (int w_off = 0; w_off < B; w_off += ds.ex_w) {
+            const int Bc = std::min(ds.ex_w, B - w_off);
             {
                 VMC_PROF("rho_slots", stream);
                 ex_xi_swap(ds.xi_psi.d, ds.h_out.d, ds.s.d, ds.t.d, ds.pair_ij.d, ds.xi_swap.d, Bc, w_off, stream);

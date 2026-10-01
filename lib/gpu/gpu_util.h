@@ -30,7 +30,11 @@
 inline std::atomic<long long>& launch_counter() { static std::atomic<long long> c{0}; return c; }
 
 // Check if kernel fails to launch or there is an error while CPU is waiting for GPUs to finish
-inline std::atomic<bool>& graph_capturing() { static std::atomic<bool> f{false}; return f; }
+inline std::atomic<bool>& graph_capturing() { 
+    thread_local std::atomic<bool> f{false};  // Ensure that a different instance is launched at every thread
+    return f; 
+}
+
 inline void cuda_sync_check(const char* where) {
     const bool capturing = graph_capturing().load(std::memory_order_relaxed);
     if constexpr (prof_enabled) if (!capturing) launch_counter().fetch_add(1, std::memory_order_relaxed);
@@ -50,7 +54,6 @@ inline void cuda_sync_check(const char* where) {
     }
 #endif
 }
-
 
 // If no device available throw error. May either manually pick device or will pick one with most available memory. verbose decides if device properties get printed or not
 inline int gpu_select_device(bool verbose = true) {
@@ -93,9 +96,14 @@ struct XferStats {
     std::atomic<long long> bytes_up{0}, bytes_dn{0}, n_up{0}, n_dn{0};
     void reset() { bytes_up = 0; bytes_dn = 0; n_up = 0; n_dn = 0; }
 };
-inline XferStats& xfer_stats() { static XferStats s; return s; }
+inline XferStats& xfer_stats() { 
+    thread_local XferStats s;
+    return s; 
+}   // per host thread (multi-GPU)
 inline void xfer_note_up(std::size_t b) { xfer_stats().bytes_up += (long long)b; xfer_stats().n_up++; }
 inline void xfer_note_dn(std::size_t b) { xfer_stats().bytes_dn += (long long)b; xfer_stats().n_dn++; }
+
+inline thread_local bool g_dry_alloc = false;
 
 // This functions as a CUDA vector wrapper
 template <typename T>
@@ -107,10 +115,12 @@ struct DeviceArray {
     DeviceArray() = default;
 
     // Descrtructor: If pointer has allocated memory free it
-    ~DeviceArray() { if (d) cudaFree(d); }
+    ~DeviceArray() { 
+        if (d) cudaFree(d); 
+    }
 
     // Do not allow two DeviceArrays to point to same memroy
-    DeviceArray(const DeviceArray&)            = delete;
+    DeviceArray(const DeviceArray&) = delete;
     DeviceArray& operator=(const DeviceArray&) = delete;
 
     // Allows for data movement to another array and freeing the originial memory
@@ -129,13 +139,14 @@ struct DeviceArray {
         if (d) { cudaFree(d); d = nullptr; n = 0; }
         if (n_ == 0) return;                 // cudaMalloc(0) is unspecified; a
                                              // zero-length array stays null
+        if (g_dry_alloc) { n = n_; return; } // planner dry run: size only
         CUDA_CHECK(cudaMalloc(&d, n_ * sizeof(T)));
         n = n_;
     }
 
     // Move from CPU to GPU
     void up(const T* h, std::size_t n_) {
-        if (n_ == 0) return;
+        if (n_ == 0 || g_dry_alloc) return;
         if (n_ > n) throw std::runtime_error("DeviceArray::up: source larger than allocation");
         CUDA_CHECK(cudaMemcpy(d, h, n_ * sizeof(T), cudaMemcpyHostToDevice));
         xfer_note_up(n_ * sizeof(T));

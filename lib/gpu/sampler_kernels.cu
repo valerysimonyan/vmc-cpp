@@ -1,6 +1,7 @@
 #include "sampler_kernels.h"
 #include "philox.h"
 #include "../envelope.h"
+#include "../seed.h"
 
 #include <cmath>
 #include <vector>
@@ -28,7 +29,7 @@ __global__ void propose_coord_kernel(const real* __restrict__ x, real* __restric
 void propose_coord(DeviceState& ds, int B, double step, cudaStream_t stream) {
     if (B <= 0) return;
     const int threads = 256;
-    propose_coord_kernel<<<(B+threads-1)/threads, threads, 0, stream>>>(ds.x.d, ds.x_prop.d, ds.prop_idx.d, ds.rng_ctr.d, rng_seed, B, step);
+    propose_coord_kernel<<<(B+threads-1)/threads, threads, 0, stream>>>(ds.x.d, ds.x_prop.d, ds.prop_idx.d, ds.rng_ctr.d, vmc_seed(), B, step);
     cuda_sync_check("propose_coord");
 }
 
@@ -60,7 +61,7 @@ __global__ void accept_coord_kernel(real* __restrict__ x, const real* __restrict
 void accept_coord(DeviceState& ds, int B, cudaStream_t stream) {
     if (B <= 0) return;
     const int threads = 256;
-    accept_coord_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(ds.x.d, ds.x_prop.d, ds.logp.d, ds.logp_prop.d, ds.acc.d, ds.rng_ctr.d, rng_seed, B);
+    accept_coord_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(ds.x.d, ds.x_prop.d, ds.logp.d, ds.logp_prop.d, ds.acc.d, ds.rng_ctr.d, vmc_seed(), B);
     cuda_sync_check("accept_coord");
 }
 
@@ -113,7 +114,7 @@ __global__ void propose_discrete_kernel(const real* __restrict__ cur, real* __re
 void propose_discrete(DeviceState& ds, int B, bool is_spin, cudaStream_t stream) {
     if (B <= 0) return;
     const int threads = 256;
-    propose_discrete_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(is_spin ? ds.s.d : ds.t.d, is_spin ? ds.s_prop.d : ds.t_prop.d, ds.pick_a.d, ds.pick_b.d, ds.rng_ctr.d, rng_seed, B, is_spin ? N_u : N_p, is_spin ? N_d : N_n);
+    propose_discrete_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(is_spin ? ds.s.d : ds.t.d, is_spin ? ds.s_prop.d : ds.t_prop.d, ds.pick_a.d, ds.pick_b.d, ds.rng_ctr.d, vmc_seed(), B, is_spin ? N_u : N_p, is_spin ? N_d : N_n);
     cuda_sync_check("propose_discrete");
 }
 
@@ -154,7 +155,7 @@ __global__ void accept_discrete_kernel(real* __restrict__ cur, const real* __res
 void accept_discrete(DeviceState& ds, int B, bool is_spin, cudaStream_t stream) {
     if (B <= 0) return;
     const int threads = 256;
-    accept_discrete_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(is_spin ? ds.s.d : ds.t.d, is_spin ? ds.s_prop.d : ds.t_prop.d, is_spin ? ds.t.d : ds.s.d, is_spin, ds.x.d, ds.params.d + (ds.P - envelope::n_params_env) + 1, ds.S_cur.d, ds.S_prop.d, ds.logp.d, is_spin ? ds.sp_acc.d : ds.tau_acc.d, ds.rng_ctr.d, rng_seed, B);
+    accept_discrete_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(is_spin ? ds.s.d : ds.t.d, is_spin ? ds.s_prop.d : ds.t_prop.d, is_spin ? ds.t.d : ds.s.d, is_spin, ds.x.d, ds.params.d + (ds.P - envelope::n_params_env) + 1, ds.S_cur.d, ds.S_prop.d, ds.logp.d, is_spin ? ds.sp_acc.d : ds.tau_acc.d, ds.rng_ctr.d, vmc_seed(), B);
     cuda_sync_check("accept_discrete");
 }
 

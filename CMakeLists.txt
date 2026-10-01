@@ -64,7 +64,7 @@ endif()
 
 set(VMC_SOURCES
     lib/walkers.cpp lib/physics.cpp lib/slater.cpp lib/util.cpp
-    lib/pool.cpp    lib/sr.cpp      lib/cg.cpp     lib/descent.cpp
+    lib/pool.cpp    lib/sr.cpp      lib/cg.cpp     lib/descent.cpp lib/descent_mg.cpp
     lib/monte_carlo.cpp lib/checkpoint.cpp)
 
 add_library(vmc_core STATIC ${VMC_SOURCES})
@@ -107,7 +107,7 @@ if(VMC_CUDA)
     target_sources(vmc_core PRIVATE ${VMC_CUDA_SOURCES})
     # PUBLIC so every consumer of vmc_core can #ifdef VMC_CUDA on integration points.
     target_compile_definitions(vmc_core PUBLIC VMC_CUDA)
-    target_link_libraries(vmc_core PUBLIC CUDA::cudart CUDA::cublas)
+    target_link_libraries(vmc_core PUBLIC CUDA::cudart CUDA::cublas CUDA::nvml)
     set_target_properties(vmc_core PROPERTIES
         CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
         CUDA_SEPARABLE_COMPILATION ON)

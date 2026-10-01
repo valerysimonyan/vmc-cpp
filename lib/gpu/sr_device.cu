@@ -58,7 +58,12 @@ __global__ void o_v_kernel(const float* __restrict__ O, const double* __restrict
     if (threadIdx.x == 0) t[i] = red[0];
 }
 
-static DeviceArray<double>& ot_scratch() { static DeviceArray<double> a; return a; }
+static DeviceArray<double>& ot_scratch() { 
+    static DeviceArray<double> a[8]; // Allocate up to 8 devices 
+    int d = 0; 
+    CUDA_CHECK(cudaGetDevice(&d)); // Calll current device ID
+    return a[d]; // Return d'th active DeviceArray 
+}   
 
 // y = O^T x 
 template <typename T>
@@ -346,8 +351,7 @@ SRStepLog SR_step_device(DeviceState& ds, cublasHandle_t h, Ansatz& a, int iter,
     CGResult cg{};
     {
         VMC_PROF("sr/cg", stream);
-        cg = cg_solve_device(h, matvec, ds.grad_d.d, ds.delta_d.d, ds.M_inv_d.d, P, sr_cg_tol, sr_cg_maxit,
-                             ds.cg_r.d, ds.cg_z.d, ds.cg_p.d, ds.cg_Ap.d, &dl, stream);
+        cg = cg_solve_device(h, matvec, ds.grad_d.d, ds.delta_d.d, ds.M_inv_d.d, P, sr_cg_tol, sr_cg_maxit, ds.cg_r.d, ds.cg_z.d, ds.cg_p.d, ds.cg_Ap.d, &dl, stream);
     }
 
     double q = 0.0, delta_norm = 0.0;
@@ -377,6 +381,166 @@ SRStepLog SR_step_device(DeviceState& ds, cublasHandle_t h, Ansatz& a, int iter,
 
     for (std::size_t j = 0; j < P; j++) a.add_to_param(j, -sr_lr * delta_host[j]);
 
+    if (n_dl) *n_dl = dl;
+    return {lambda_t, cg.iters, cg.rel_residual, delta_norm, q, norm_capped};
+}
+
+// Assigns scratch space
+static double* mg_buf(int slot, std::size_t P) {   
+    static DeviceArray<double> b[8][3];  // Make an array of DeviceArrays, 3 slots for each device, up to 8 devices
+    int d = 0; 
+    CUDA_CHECK(cudaGetDevice(&d));  // Access device
+    DeviceArray<double>& a = b[d][slot];  // Record slot
+    if (a.n < P) a.alloc(P);  // Resize to size P  
+    return a.d;
+}
+
+// Parallelized addition of two vectors
+__global__ void mg_add_kernel(double* __restrict__ y, const double* __restrict__ x, std::size_t n) {
+    std::size_t i = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    y[i] += x[i];
+}
+
+// Add GPU 0 and GPU 1 partial vectors (assigned in plan 0 and 1, not as named in computer)
+template <typename Get>
+static void mg_sum_to0(const std::vector<MgRep>& R, std::size_t P, Get vec) {
+    CUDA_CHECK(cudaSetDevice(R[0].dev));  // Select GPU 0 
+    double* y0 = vec(R[0]);  // get GPU 0's partial array 
+    double* tmp = mg_buf(0, P);  // Allocate temporary scratch space on GPU 0 
+    // Iterate over the other GPUs
+    for (std::size_t k = 1; k < R.size(); k++) {
+        CUDA_CHECK(cudaMemcpyPeer(tmp, R[0].dev, vec(R[k]), R[k].dev, P * sizeof(double)));  // Move k'th GPU vector into tmp on GPU 0
+        mg_add_kernel<<<blocks_for(P), T256>>>(y0, tmp, P); // Add the two in parallel 
+        cuda_sync_check("mg_sum_to0"); 
+    }
+}
+
+// Multi GPU calculation of O_exp_mg
+void O_exp_mg(const std::vector<MgRep>& R, std::size_t P, long long n_valid) {
+    // Launch jobs across GPUs from the greatest to the smallest, write to O_exp_d
+    for (std::size_t k = R.size(); k-- > 0;) {   
+        CUDA_CHECK(cudaSetDevice(R[k].dev));
+        build_mask(R[k].ds->valid_pool.d, R[k].ds->mask_d.d, R[k].Ns);
+        O_exp_device(R[k].h, R[k].ds->O_pool.d, R[k].ds->mask_d.d, R[k].Ns, P, n_valid, R[k].ds->O_exp_d.d); 
+    }
+    // Move to GPU 0 and add the arrays
+    mg_sum_to0(R, P, [](const MgRep& r) { 
+        return r.ds->O_exp_d.d; 
+    });
+    // Move calculation of O_exp_d to all other GPUs, they now all have a copy
+    for (std::size_t k = 1; k < R.size(); k++) {
+        CUDA_CHECK(cudaMemcpyPeer(R[k].ds->O_exp_d.d, R[k].dev, R[0].ds->O_exp_d.d, R[0].dev, P * sizeof(double)));
+    }
+}
+
+// Multi GPU calculation of gradient
+void grad_mg(const std::vector<MgRep>& R, std::size_t P, long long n_valid, const ClipStats& cs) {
+    // Launch jobs across GPUs from the greatest to the smallest, write to grad_d
+    for (std::size_t k = R.size(); k-- > 0;) {
+        const MgRep& r = R[k];
+        CUDA_CHECK(cudaSetDevice(r.dev));
+        clip_kernel<<<blocks_for(r.Ns), T256>>>(r.ds->E_pool.d, r.ds->valid_pool.d, cs.clip_lo, cs.clip_hi, r.ds->E_clip_d.d, r.Ns);
+        cuda_sync_check("grad_mg clip");
+        gemv_OT(r.h, r.ds->O_pool.d, r.ds->E_clip_d.d, r.ds->grad_d.d, r.Ns, P, 0, "grad_mg"); 
+    }
+    // Sum all the samples in GPU 0
+    mg_sum_to0(R, P, [](const MgRep& r) { 
+        return r.ds->grad_d.d;
+     });
+    grad_final_kernel<<<blocks_for(P), T256>>>(R[0].ds->grad_d.d, R[0].ds->O_exp_d.d, (double)n_valid, cs.E_clip_mean, P);
+    cuda_sync_check("grad_mg final");
+}
+
+// out = S v over every replica's rows, v resides in GPU 0 (0 as in plan)
+static void mg_apply(const std::vector<MgRep>& R, std::size_t P, long long n_valid, double lambda_diag, const double* v, double* out, bool raw, long long* dl) {
+    CUDA_CHECK(cudaSetDevice(R[0].dev));
+    const double c = ddot(R[0].h, P, R[0].ds->O_exp_d.d, v, dl);   // O_exp . v (O_exp identical everywhere)
+    // Iterate through GPUs 
+    for (std::size_t k = R.size(); k-- > 0;) {
+        const MgRep& r = R[k];
+        CUDA_CHECK(cudaSetDevice(r.dev));
+        const double* vk = v;
+        double* outk = out;
+        // If not GPU 0 write to scratch space slot 1 the original vector, and slot 2 
+        if (k > 0) {
+            double* v1 = mg_buf(1, P);
+            CUDA_CHECK(cudaMemcpyPeer(v1, r.dev, v, R[0].dev, P * sizeof(double)));
+            vk = v1;
+            outk = mg_buf(2, P);
+        }
+        // Compute (O - O_exp). v
+        gemv_O(r.h, r.ds->O_pool.d, vk, r.ds->t_ns_d.d, r.Ns, P, 0, "mg_apply Ov");
+        center_kernel<<<blocks_for(r.Ns), T256>>>(r.ds->t_ns_d.d, r.ds->mask_d.d, c, r.Ns);
+        cuda_sync_check("mg_apply center");
+        gemv_OT(r.h, r.ds->O_pool.d, r.ds->t_ns_d.d, outk, r.Ns, P, 0, "mg_apply OTt");
+    }
+    // Add Results from different devices
+    CUDA_CHECK(cudaSetDevice(R[0].dev));
+    for (std::size_t k = 1; k < R.size(); k++) {
+        CUDA_CHECK(cudaSetDevice(R[k].dev));
+        double* outk = mg_buf(2, P);
+        CUDA_CHECK(cudaSetDevice(R[0].dev));
+        double* tmp = mg_buf(0, P);
+        CUDA_CHECK(cudaMemcpyPeer(tmp, R[0].dev, outk, R[k].dev, P * sizeof(double)));
+        mg_add_kernel<<<blocks_for(P), T256>>>(out, tmp, P);
+        cuda_sync_check("mg_apply sum");
+    }
+    // Apply regularization
+    apply_tail_kernel<<<blocks_for(P), T256>>>(out, v, R[0].ds->S_diag_d.d, R[0].ds->d_rms_d.d, (double)n_valid, lambda_diag, sr_eps, raw, P);
+    cuda_sync_check("mg_apply tail");
+}
+
+// Do an SR step over multiple GPUs
+SRStepLog SR_step_device_mg(const std::vector<MgRep>& R, Ansatz& a, int iter, long long n_valid, std::vector<double>& delta_host, long long* n_dl) {
+    // Get 0th GPUs state and handle, dl counts device to host downloads
+    DeviceState& ds = *R[0].ds;
+    const std::size_t P = ds.P;
+    cublasHandle_t h = R[0].h;
+    long long dl = 0;
+
+    // Regularization parameter lamda (+ lambda S_ii) and learning rate
+    double lambda_t = std::max(sr_lambda0 * std::pow(sr_rho, iter), sr_lambda_min);
+    double sr_lr = std::max(sr_eta * std::pow(0.999, iter), 0.001);
+
+    // Sum diagonal terms of SR matrix across devices
+    for (std::size_t k = R.size(); k-- > 0;) {
+        CUDA_CHECK(cudaSetDevice(R[k].dev));
+        S_diag_device(R[k].ds->O_pool.d, R[k].ds->valid_pool.d, R[k].ds->O_exp_d.d, R[k].Ns, P, n_valid, R[k].ds->S_diag_d.d);
+    }
+    mg_sum_to0(R, P, [](const MgRep& r) { 
+        return r.ds->S_diag_d.d; 
+    });
+    // Evaulate 1/S_ii(1+lambda)
+    M_inv_device(ds.S_diag_d.d, ds.d_rms_d.d, lambda_t, ds.M_inv_d.d, P);
+
+    // Use conjugate gradient to find the step 
+    auto matvec = [&](const double* v, double* out) { 
+        mg_apply(R, P, n_valid, lambda_t, v, out, false, &dl); 
+    };
+    CGResult cg = cg_solve_device(h, matvec, ds.grad_d.d, ds.delta_d.d, ds.M_inv_d.d, P, sr_cg_tol, sr_cg_maxit, ds.cg_r.d, ds.cg_z.d, ds.cg_p.d, ds.cg_Ap.d, &dl, 0);
+
+    // Add limiting cap on step 
+    double q = 0.0, delta_norm = 0.0;
+    bool norm_capped = false;
+    mg_apply(R, P, n_valid, lambda_t, ds.delta_d.d, ds.S_delta_d.d, true, &dl);
+    q = ddot(h, P, ds.delta_d.d, ds.S_delta_d.d, &dl);
+    if (q > sr_trust_r2) {
+        const double scale = std::sqrt(sr_trust_r2 / q);
+        check_blas(cublasDscal(h, (int)P, &scale, ds.delta_d.d, 1), "SR_step_device_mg trust scale");
+    }
+    double delta_norm_raw = std::sqrt(ddot(h, P, ds.delta_d.d, ds.delta_d.d, &dl));
+    norm_capped = delta_norm_raw > sr_delta_max;
+    if (norm_capped) {
+        const double scale = sr_delta_max / delta_norm_raw;
+        check_blas(cublasDscal(h, (int)P, &scale, ds.delta_d.d, 1), "SR_step_device_mg norm cap");
+        std::cerr << "SR_step: norm cap triggered -- raw ||delta||=" << delta_norm_raw << " > sr_delta_max=" << sr_delta_max << ", rescaled.\n";
+    }
+    delta_norm = std::sqrt(ddot(h, P, ds.delta_d.d, ds.delta_d.d, &dl));    
+    // Apply update on CPU
+    delta_host.resize(P);
+    ds.delta_d.down(delta_host.data(), P);
+    for (std::size_t j = 0; j < P; j++) a.add_to_param(j, -sr_lr * delta_host[j]);
     if (n_dl) *n_dl = dl;
     return {lambda_t, cg.iters, cg.rel_residual, delta_norm, q, norm_capped};
 }

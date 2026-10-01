@@ -9,7 +9,10 @@
 #endif
 
 // Getter for timings
-GpuProf& GpuProf::get() { static GpuProf p; return p; }
+GpuProf& GpuProf::get() { 
+    thread_local GpuProf p; 
+    return p; 
+}   
 
 // Destructor
 GpuProf::~GpuProf() {

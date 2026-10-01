@@ -17,6 +17,8 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <cstdlib>
+#include <cmath>
 
 #ifdef VMC_CUDA
 #include "gpu/arena.h"
@@ -26,6 +28,7 @@
 #include "gpu/record_device.h"
 #include "gpu/sr_device.h"
 #include "gpu/prof.h"
+#include "gpu/planner.h"
 #include <cublas_v2.h>
 
 inline constexpr bool debug_walker_download_at_checkpoint = false;
@@ -227,8 +230,30 @@ DescentResult descent(Ansatz& a) {
     std::size_t n_params = a.n_params();
     DescentResult r{};
     
+    int B = n_walkers;
+    // Generate plan if GPU code for efficient allocaiton
+#ifdef VMC_CUDA 
+    std::size_t B_plan = 0;
+    // If VMC_GPUS declared during run and it is set to "one" run the plan
+    if (const char* gp = std::getenv("VMC_GPUS"); 
+        gp && std::string(gp) == "one") {
+        const std::vector<GpuPlan> plan = plan_gpus(a);
+        // Go from beginning to end of plan, find that which has the largest number of walkers
+        const GpuPlan& g = *std::max_element(plan.begin(), plan.end(), 
+            [](const GpuPlan& x, const GpuPlan& y) { 
+                return x.B < y.B; 
+            }
+        );
+        // Set active device to plan, initialize variable accordingly
+        CUDA_CHECK(cudaSetDevice(g.dev));
+        B_plan = g.B;
+        B = (int)g.B;
+        std::cout << "descent: GPU" << g.dev << " with " << B << " walkers (planner)\n";
+    }
+#endif
+
     WalkerBatch wb; 
-    wb.init(n_walkers);
+    wb.init(B);
     ThreadPool pool(n_thread);
     std::vector<Workspace> wss(n_thread);
     
@@ -237,8 +262,8 @@ DescentResult descent(Ansatz& a) {
     init_batch(wb, a, &pool, wss);
 
 #ifdef VMC_CUDA
-    gpu_select_device(true);
-    DeviceState ds(a);
+    if (B_plan == 0) gpu_select_device(true);
+    DeviceState ds(a, true, B_plan);
     ds.grow_phase3(a);
     ds.grow_phase33();
     ds.grow_phase4();
@@ -253,9 +278,9 @@ DescentResult descent(Ansatz& a) {
 
     ds.upload_params(a, staging);
     upload_and_reset(ds, wb, staging);
-    eval_logp_batch(ds, cublas, n_walkers);
+    eval_logp_batch(ds, cublas, B);
 
-    double therm_acc = therm_init_tuned_device(ds, cublas, n_walkers, step);
+    double therm_acc = therm_init_tuned_device(ds, cublas, B, step);
 #else
     double therm_acc = therm_init_tuned(wb, a, step, &pool, wss);
 #endif
@@ -281,7 +306,7 @@ DescentResult descent(Ansatz& a) {
     SROp sr_op; 
     
     // Vectors for statistics, declare once for memory use, allocate maximum amount now 
-    std::size_t n_samples_max = (std::size_t)n_walkers * (std::size_t)records_per_iter_max;
+    std::size_t n_samples_max = (std::size_t)B * (std::size_t)records_per_iter_max;
 #ifdef VMC_CUDA
     // No host O_pool: it lives on the device and never crosses the bus. E_pool,
     // valid_pool and the per-walker stats arrive in `it` once per iteration.
@@ -305,7 +330,7 @@ DescentResult descent(Ansatz& a) {
 
         // Raise number of records after certain time step
         int records_now = (i >= grow_at_iter) ? records_per_iter_max : records_per_iter;
-        std::size_t n_samples = (std::size_t)n_walkers * (std::size_t)records_now;
+        std::size_t n_samples = (std::size_t)B * (std::size_t)records_now;
         
         // Compute all acceptance rates, dynamically adjust step size
         int total_sweeps = therm_re_sweep + records_now * sweeps_between_records;
@@ -317,30 +342,30 @@ DescentResult descent(Ansatz& a) {
 #ifdef VMC_CUDA
         xfer_stats().reset();
         { VMC_PROF_HOST("/transfers/params_up"); ds.upload_params(a, staging); }   // UP: params (P)
-        eval_logp_batch(ds, cublas, n_walkers);
+        eval_logp_batch(ds, cublas, B);
 
         // Thermalize after the parameter update, then the record rounds: sweeps,
         // device local_E, O assembly -- nothing crosses the bus until the end.
         auto tA = std::chrono::steady_clock::now();
         {
             VMC_PROF("/therm_sweeps", 0);
-            r.acceptance = therm_batch_device(ds, cublas, n_walkers, step, therm_re_sweep);
+            r.acceptance = therm_batch_device(ds, cublas, B, step, therm_re_sweep);
         }
         auto tB = std::chrono::steady_clock::now();
 
         RecordTimes rtimes;
-        record_batch_device(ds, cublas, a, wss[0], n_walkers, step, records_now, /*with_O=*/true, &rtimes);
+        record_batch_device(ds, cublas, a, wss[0], B, step, records_now, /*with_O=*/true, &rtimes);
         auto tC = std::chrono::steady_clock::now();
 
         // DOWN: E_pool, valid_pool, per-walker stats, acceptance counters -- one copy.
-        download_iteration(ds, n_walkers, records_now, staging, it);
+        download_iteration(ds, B, records_now, staging, it);
         bs = it.bs;
         xfer_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tC).count();
 
         gpu_ms = std::chrono::duration<double, std::milli>(tB - tA).count() + rtimes.sweep_ms + rtimes.localE_ms + rtimes.o_ms;
         local_E_dev_ms = rtimes.localE_ms;
         o_ms = rtimes.o_ms;
-        spin_tau_from_counts(it.sp_acc, it.tau_acc, n_walkers, total_sweeps, r.spin_acceptance, r.tau_acceptance);
+        spin_tau_from_counts(it.sp_acc, it.tau_acc, B, total_sweeps, r.spin_acceptance, r.tau_acceptance);
 #else
         // Evaluate log|Ψ|
         refresh_logp(wb, a, &pool, wss);
@@ -489,7 +514,7 @@ DescentResult descent(Ansatz& a) {
         // averaged in. Reports are cumulative from iteration 1.
         prof_iteration_end(ms);
         if (i == 0) prof_reset();
-        else if ((i + 1) % prof_report_every == 0) prof_report(n_walkers, records_now, n_params, "descent");
+        else if ((i + 1) % prof_report_every == 0) prof_report(B, records_now, n_params, "descent");
 #endif
         if (i < N_gd) std::cout << "ADAM|"; else std::cout << "SR|";
         std::cout << "Step: " << i << ": E_exp: " << r.El_exp << ", E_err: " << r.El_err
@@ -510,7 +535,7 @@ DescentResult descent(Ansatz& a) {
     }
     save_checkpoint("final_checkpoint.txt", a);
 #ifdef VMC_CUDA
-    prof_report(n_walkers, records_per_iter, n_params, "descent run end");
+    prof_report(B, records_per_iter, n_params, "descent run end");
     ds.download_walkers(wb, staging);     // run end: the one sanctioned x/s/t download
     cublasDestroy(cublas);
 #endif

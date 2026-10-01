@@ -45,3 +45,15 @@ CGResult cg_solve_device(cublasHandle_t h, const DeviceMatVec& matvec, const dou
 
 SRStepLog SR_step_device(DeviceState& ds, cublasHandle_t h, Ansatz& a, int iter, std::size_t n_samples, long long n_valid, std::vector<double>& delta_host, long long* n_scalar_downloads = nullptr, cudaStream_t stream = 0);
 
+struct MgRep { 
+    DeviceState* ds = nullptr;   // Initialize DeviceState as null
+    cublasHandle_t h = nullptr;  // Handle of device
+    int dev = 0;                 // Device number
+    std::size_t Ns = 0;          // Device sample rows
+};
+
+void O_exp_mg(const std::vector<MgRep>& R, std::size_t P, long long n_valid);
+
+void grad_mg(const std::vector<MgRep>& R, std::size_t P, long long n_valid, const ClipStats& cs);
+
+SRStepLog SR_step_device_mg(const std::vector<MgRep>& R, Ansatz& a, int iter, long long n_valid, std::vector<double>& delta_host, long long* n_scalar_downloads = nullptr);

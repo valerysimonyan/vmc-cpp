@@ -967,3 +967,85 @@ The windows agree within their errors, with the variance unchanged.
 | 6.3 precision | fp32_forward available (exploratory ON); fp32_opool OFF pending a faster mixed-precision GEMV |
 | 6.4 multi-GPU | the per-iteration baseline it would multiply is now 468 ms ({64}) / 678 ms ({64,64,64}) with fp32_forward, against 1248 / 2435 ms in FP64 |
 | **new: SR matvec** | with fp32 forwards, SR is 57% ({64}) to 67% ({64,64,64}) of an iteration at the lambda floor, where production spends most of its time. A mixed-precision matvec that actually delivers the bandwidth win is now the largest single target. |
+
+### prof 2026-09-23 22:50:08 | rev f8dd806 | descent
+card: NVIDIA GeForce RTX 3090, sm_86, 82 SM, 1.70 GHz, FP64 peak ~0.556 TF (est: 2 FP64/SM), FP64:FP32 = 1:64
+config: B=5800 records=2 sweeps/iter=9 N=6 K=31 m_feat=61 P=47767 jet_chunk=0 real=fp64
+iterations profiled: 99, mean 712.25 ms/iter
+rows are INCLUSIVE (a parent contains its children). gpu_ms is cudaEvent time on the
+profiled stream; host_ms is the wall time the host spent inside the range. host_ms much
+larger than gpu_ms means the host is not keeping the device fed (launch latency, or a
+blocking copy); host_ms much smaller means the range only enqueued work.
+
+| range | kind | gpu_ms/iter | host_ms/iter | %iter | total_ms | launches/iter | calls/iter |
+|---|---|---:|---:|---:|---:|---:|---:|
+| transfers/params_up | host | 0.000 | 0.056 | 0.01 | 5.6 | 1.0 | 1.00 |
+| net_fwd | gpu | 0.618 | 0.113 | 0.09 | 61.2 | 17.0 | 1.00 |
+| assemble | gpu | 0.123 | 0.005 | 0.02 | 12.2 | 1.0 | 1.00 |
+| lu | gpu | 0.554 | 0.008 | 0.08 | 54.8 | 1.0 | 1.00 |
+| combine_envelope | gpu | 0.017 | 0.005 | 0.00 | 1.7 | 1.0 | 1.00 |
+| therm_sweeps | gpu | 107.767 | 108.950 | 15.13 | 10668.9 | 153.0 | 1.00 |
+| therm_sweeps/coord_draws | gpu | 70.656 | 0.122 | 9.92 | 6994.9 | 54.0 | 3.00 |
+| therm_sweeps/st_table | gpu | 8.090 | 0.421 | 1.14 | 800.9 | 60.0 | 3.00 |
+| therm_sweeps/st_table/feat_combo | gpu | 0.093 | 0.013 | 0.01 | 9.2 | 3.0 | 3.00 |
+| therm_sweeps/st_table/net_fwd | gpu | 5.716 | 0.300 | 0.80 | 565.9 | 45.0 | 6.00 |
+| therm_sweeps/st_table/xi_combo | gpu | 0.094 | 0.013 | 0.01 | 9.3 | 3.0 | 3.00 |
+| therm_sweeps/st_table/assemble | gpu | 0.378 | 0.013 | 0.05 | 37.4 | 3.0 | 3.00 |
+| therm_sweeps/st_table/lu | gpu | 1.736 | 0.021 | 0.24 | 171.9 | 3.0 | 3.00 |
+| therm_sweeps/st_table/det_combine | gpu | 0.032 | 0.013 | 0.00 | 3.2 | 3.0 | 3.00 |
+| therm_sweeps/discrete_block | gpu | 28.920 | 0.082 | 4.06 | 2863.1 | 36.0 | 3.00 |
+| record_sweeps | gpu | 216.259 | 216.259 | 30.36 | 21409.6 | 306.0 | 2.00 |
+| record_sweeps/coord_draws | gpu | 142.007 | 0.235 | 19.94 | 14058.6 | 108.0 | 6.00 |
+| record_sweeps/st_table | gpu | 16.204 | 0.838 | 2.28 | 1604.2 | 120.0 | 6.00 |
+| record_sweeps/st_table/feat_combo | gpu | 0.187 | 0.027 | 0.03 | 18.5 | 6.0 | 6.00 |
+| record_sweeps/st_table/net_fwd | gpu | 11.439 | 0.600 | 1.61 | 1132.4 | 90.0 | 12.00 |
+| record_sweeps/st_table/xi_combo | gpu | 0.188 | 0.026 | 0.03 | 18.6 | 6.0 | 6.00 |
+| record_sweeps/st_table/assemble | gpu | 0.756 | 0.025 | 0.11 | 74.9 | 6.0 | 6.00 |
+| record_sweeps/st_table/lu | gpu | 3.490 | 0.041 | 0.49 | 345.5 | 6.0 | 6.00 |
+| record_sweeps/st_table/det_combine | gpu | 0.064 | 0.025 | 0.01 | 6.3 | 6.0 | 6.00 |
+| record_sweeps/discrete_block | gpu | 57.943 | 0.161 | 8.14 | 5736.4 | 72.0 | 6.00 |
+| record | gpu | 169.036 | 169.038 | 23.73 | 16734.6 | 742.0 | 2.00 |
+| record/eval_cached | gpu | 4.921 | 0.366 | 0.69 | 487.2 | 66.0 | 2.00 |
+| record/eval_cached/net_fwd | gpu | 2.142 | 0.276 | 0.30 | 212.0 | 58.0 | 2.00 |
+| record/eval_cached/assemble | gpu | 0.248 | 0.009 | 0.03 | 24.5 | 2.0 | 2.00 |
+| record/eval_cached/lu | gpu | 1.176 | 0.014 | 0.17 | 116.4 | 2.0 | 2.00 |
+| record/eval_cached/combine_envelope | gpu | 0.037 | 0.009 | 0.01 | 3.6 | 2.0 | 2.00 |
+| record/eval_cached/getri | gpu | 1.263 | 0.010 | 0.18 | 125.0 | 2.0 | 2.00 |
+| record/jet_pass | gpu | 49.608 | 54.154 | 6.96 | 4911.2 | 44.0 | 2.00 |
+| record/jet_pass/jet_net | gpu | 20.773 | 0.260 | 2.92 | 2056.6 | 34.0 | 2.00 |
+| record/jet_pass/detjet | gpu | 27.570 | 0.009 | 3.87 | 2729.5 | 2.0 | 2.00 |
+| record/jet_pass/compose | gpu | 1.250 | 53.868 | 0.18 | 123.7 | 8.0 | 2.00 |
+| record/exchange | gpu | 14.613 | 14.620 | 2.05 | 1446.7 | 72.0 | 2.00 |
+| record/exchange/st_table | gpu | 5.444 | 0.285 | 0.76 | 538.9 | 40.0 | 2.00 |
+| record/exchange/st_table/feat_combo | gpu | 0.086 | 0.009 | 0.01 | 8.6 | 2.0 | 2.00 |
+| record/exchange/st_table/net_fwd | gpu | 3.817 | 0.204 | 0.54 | 377.9 | 30.0 | 4.00 |
+| record/exchange/st_table/xi_combo | gpu | 0.063 | 0.009 | 0.01 | 6.2 | 2.0 | 2.00 |
+| record/exchange/st_table/assemble | gpu | 0.253 | 0.009 | 0.04 | 25.0 | 2.0 | 2.00 |
+| record/exchange/st_table/lu | gpu | 1.178 | 0.014 | 0.17 | 116.6 | 2.0 | 2.00 |
+| record/exchange/st_table/det_combine | gpu | 0.020 | 0.009 | 0.00 | 2.0 | 2.0 | 2.00 |
+| record/exchange/gate_plan | gpu | 0.032 | 0.014 | 0.00 | 3.1 | 4.0 | 2.00 |
+| record/exchange/rho_slots | gpu | 4.344 | 0.145 | 0.61 | 430.1 | 24.0 | 4.00 |
+| record/exchange/rank2 | gpu | 4.737 | 0.018 | 0.67 | 469.0 | 4.0 | 4.00 |
+| record/exchange/fallback | host | 0.000 | 14.131 | 1.98 | 1399.0 | 0.0 | 2.00 |
+| record/assemble | gpu | 0.288 | 0.015 | 0.04 | 28.5 | 4.0 | 2.00 |
+| record/stats | gpu | 0.027 | 0.014 | 0.00 | 2.7 | 4.0 | 2.00 |
+| record/o_assemble | gpu | 99.546 | 99.546 | 13.98 | 9855.1 | 552.0 | 2.00 |
+| transfers/alpha_dn | host | 0.000 | 0.015 | 0.00 | 1.5 | 0.0 | 2.00 |
+| record/o_assemble/seeds | gpu | 0.412 | 0.166 | 0.06 | 40.8 | 24.0 | 36.00 |
+| record/o_assemble/dW_gemms | gpu | 34.080 | 1.365 | 4.78 | 3373.9 | 288.0 | 144.00 |
+| record/o_assemble/delta_prop | gpu | 27.068 | 1.039 | 3.80 | 2679.8 | 228.0 | 120.00 |
+| record/o_assemble/o_finalize | gpu | 37.442 | 0.051 | 5.26 | 3706.8 | 12.0 | 12.00 |
+| transfers/download_iter | host | 0.000 | 0.065 | 0.01 | 6.4 | 0.0 | 1.00 |
+| host/reduce_iter | host | 0.000 | 0.035 | 0.00 | 3.5 | 0.0 | 1.00 |
+| sr/o_stats | gpu | 17.401 | 0.022 | 2.44 | 1722.7 | 5.0 | 2.00 |
+| host/clip_stats | host | 0.000 | 0.120 | 0.02 | 11.9 | 0.0 | 1.00 |
+| sr/grad | gpu | 6.312 | 0.012 | 0.89 | 624.9 | 3.0 | 1.00 |
+| sr/cg | gpu | 180.834 | 191.899 | 25.39 | 17902.5 | 95.3 | 1.00 |
+| sr/cg/scalars_dn | host | 0.000 | 191.195 | 26.84 | 18928.3 | 0.0 | 41.55 |
+| sr/cg/matvec | gpu | 179.805 | 0.504 | 25.24 | 17800.7 | 56.7 | 14.18 |
+| sr/cg/precond | gpu | 0.075 | 0.058 | 0.01 | 7.4 | 13.2 | 13.18 |
+| sr/trust | gpu | 12.744 | 12.744 | 1.79 | 1261.7 | 4.0 | 1.00 |
+| sr/trust/matvec | gpu | 12.677 | 0.035 | 1.78 | 1255.0 | 4.0 | 1.00 |
+| sr/trust/scalars_dn | host | 0.000 | 12.701 | 1.78 | 1257.4 | 0.0 | 3.00 |
+| transfers/delta_dn | host | 0.000 | 0.047 | 0.01 | 4.7 | 0.0 | 1.00 |
+| transfers/grad_alpha_dn | host | 0.000 | 0.007 | 0.00 | 0.7 | 0.0 | 1.00 |

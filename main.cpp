@@ -12,7 +12,7 @@
 
 
 int main() {
-    Ansatz ansatz({64}, {64}, {64}, Activation::Gelu);
+    Ansatz ansatz({32}, {32}, {32}, Activation::Gelu);
     validate_config(ansatz);
 
     if (resume) {
@@ -28,7 +28,14 @@ int main() {
         load_transfer(transfer_from, ansatz);
     }
 
+#ifdef VMC_CUDA
+    const char* gp = std::getenv("VMC_GPUS");
+    const char* ng = std::getenv("VMC_NGPU");
+    const bool multi = (gp && std::string(gp) == "auto") || (ng && std::string(ng) == "2");
+    DescentResult result = multi ? descent_mg(ansatz) : descent(ansatz);
+#else
     DescentResult result = descent(ansatz);
+#endif    
     std::cout << "Final E_loc: " << result.El_exp << std::endl;
     std::cout << "Final error: " << result.El_err << std::endl; 
     std::cout << "Final variance: " << result.var << std::endl; 

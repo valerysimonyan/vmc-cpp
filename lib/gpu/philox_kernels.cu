@@ -1,6 +1,7 @@
 #include "philox_kernels.h"
 #include "philox.h"
 #include "../constants.h"
+#include "../seed.h"
 
 // Populate batches of B walkers with random numbers
 __global__ void philox_fill_u01_kernel(double* __restrict__ out, int B, int draws, unsigned long long* __restrict__ rng_ctr, unsigned long long seed) {
@@ -26,6 +27,6 @@ void philox_fill_u01(DeviceArray<double>& out, int B, int draws_per_walker, Devi
 
     const int threads = 256;
     const int blocks  = (B + threads - 1) / threads;
-    philox_fill_u01_kernel<<<blocks, threads, 0, stream>>>(out.d, B, draws_per_walker, rng_ctr.d, rng_seed);
+    philox_fill_u01_kernel<<<blocks, threads, 0, stream>>>(out.d, B, draws_per_walker, rng_ctr.d, vmc_seed());
     cuda_sync_check("philox_fill_u01");
 }
