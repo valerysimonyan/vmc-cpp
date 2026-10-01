@@ -73,6 +73,7 @@ inline constexpr int n_walkers = n_thread * walker_per_th;
 inline constexpr int records_per_iter_max = records_per_iter * batch_grow_factor;
 
 inline constexpr unsigned long long rng_seed = 20260826ULL;
+inline constexpr unsigned long long init_seed = 1ULL;  // network weight initialisation
 static_assert(n_walkers % n_thread == 0);
 
 inline constexpr int jet_chunk = 0;

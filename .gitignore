@@ -30,3 +30,10 @@
 # python stuff
 !/plot_training.py
 !/run_status.py
+
+# tools (golden-run script, frozen_eval) and the golden reference outputs
+!/tools/
+/tools/*
+!/tools/*.py
+!/tools/*.cpp
+!/tests/golden/
