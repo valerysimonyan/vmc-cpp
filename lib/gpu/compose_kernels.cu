@@ -169,11 +169,11 @@ __global__ void validity_jet_kernel(const real* __restrict__ J_psi, const real* 
     const real pd = exp(envelope::log_factor(alpha, r_env) + envelope::jastrow<real, real>(x_sh + gw * D, s + gw * N, t + gw * N, jc, nullptr, nullptr)) * Sv;
     psi_dbl[gw] = pd;
 
-    if (!isfinite(Sv) || fabs(Sv) < (real)1e-290) { valid[gw] = 0; return; }
+    if (!isfinite(Sv) || fabs(Sv) < (real)psi_floor) { valid[gw] = 0; return; }
 
     const real v = J_psi[gw];
     const bool mismatch = fabs(v - pd) > (real)psi_mismatch_tol * fmax((real)1, fabs(pd)); // Set precision tolerance depending on precision chosen
-    if (!isfinite(v) || fabs(v) < (real)1e-290 || mismatch) { valid[gw] = 0; return; }
+    if (!isfinite(v) || fabs(v) < (real)psi_floor || mismatch) { valid[gw] = 0; return; }
 
     if (!isfinite(E_kin[gw])) { valid[gw] = 0; return; }
 

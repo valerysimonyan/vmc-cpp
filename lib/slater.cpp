@@ -27,7 +27,7 @@ double lu_det_inv(std::vector<double>& M, int n, std::vector<double>& Minv, std:
         }
         
         // If pivot zero determinant zero
-        if (piv_val < 1e-300) {
+        if (piv_val < det_floor) {
             std::fill(Minv.begin(), Minv.end(), 0.0);
             return 0.0;
         }

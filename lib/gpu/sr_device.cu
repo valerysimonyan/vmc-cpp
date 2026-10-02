@@ -159,35 +159,6 @@ double rms_update_device(cublasHandle_t h, const double* grad, double* v_rms, do
     return sr_rms_eps * asum / (double)P;
 }
 
-// Clip energies
-ClipStats clip_stats_host(const std::vector<double>& E_pool, const std::vector<unsigned char>& valid_pool, std::size_t n_samples, long long n_valid) {
-    std::vector<double> E_valid;
-    E_valid.reserve(n_samples);
-    for (std::size_t i = 0; i < n_samples; i++) {
-        if (valid_pool[i]) E_valid.push_back(E_pool[i]);
-    }
-    std::nth_element(E_valid.begin(), E_valid.begin() + n_valid/2, E_valid.end());
-    double E_med = E_valid[n_valid/2];
-    double MAD = 0.0;
-    for (double e : E_valid) MAD += std::fabs(e - E_med);
-    MAD /= (double)n_valid;
-    double clip_lo = E_med - clip_mad * MAD;
-    double clip_hi = E_med + clip_mad * MAD;
-
-    const std::size_t chunk = n_samples / (std::size_t)n_thread;
-    double E_clip_sum = 0.0;
-    for (int th = 0; th < n_thread; th++) {
-        std::size_t start = (std::size_t)th * chunk;
-        std::size_t end = (th == n_thread - 1) ? n_samples : start + chunk;
-        double part = 0.0;
-        for (std::size_t i = start; i < end; i++) {
-            if (!valid_pool[i]) continue;
-            part += std::min(std::max(E_pool[i], clip_lo), clip_hi);
-        }
-        E_clip_sum += part;
-    }
-    return {clip_lo, clip_hi, E_clip_sum / (double)n_valid};
-}
 
 __global__ void clip_kernel(const double* __restrict__ E, const unsigned char* __restrict__ valid, double lo, double hi, double* __restrict__ E_clip, std::size_t Ns) {
     std::size_t i = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;

@@ -48,14 +48,21 @@ static void chunk_range(int B, int n_workers, int th, int& w0, int& w1) {
     w1 = (th == n_workers - 1) ? B : w0 + chunk;
 }
 
-// Go to center of mass coordinates
-static void recenter_walker(double* xw) {
+// Centre of mass of one walker, R_d = (sum_i x_id) / N
+static void center_of_mass(const double* xw, double R[dim]) {
     for (int d = 0; d < dim; d++) {
-        double R_cm_d = 0.0;
-        for (int i = 0; i < N; i++) R_cm_d += xw[i*dim + d];
-        R_cm_d /= N;
-        for (int i = 0; i < N; i++) xw[i*dim + d] -= R_cm_d;
+        double sum = 0.0;
+        for (int i = 0; i < N; i++) sum += xw[i*dim + d];
+        R[d] = sum / N;
     }
+}
+
+// Move a walker to centre-of-mass coordinates
+static void recenter_walker(double* xw) {
+    double R_cm[dim];
+    center_of_mass(xw, R_cm);
+    for (int i = 0; i < N; i++)
+        for (int d = 0; d < dim; d++) xw[i*dim + d] -= R_cm[d];
 }
 
 // Initialize batch of all walkers, populate positions, spins, and isospins
@@ -246,8 +253,7 @@ double therm_batch(WalkerBatch& wb, const Ansatz& a, double step, int n_sweeps, 
 
 static double walker_r2(const double* xw) {
     double R_cm[dim] = {};
-    for (int p = 0; p < N; p++) for (int d = 0; d < dim; d++) R_cm[d] += xw[p*dim + d];
-    for (int d = 0; d < dim; d++) R_cm[d] /= N;
+    center_of_mass(xw, R_cm);
 
     double r2 = 0.0;
     for (int p = 0; p < N; p++) {

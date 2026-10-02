@@ -73,7 +73,7 @@ __global__ void det_from_lu_kernel(const real* __restrict__ M_batch, const int* 
     }
     if (swaps & 1) det = -det;
 
-    if (!isfinite(det) || fabs(det) < (real)1e-300) det = (real)0;
+    if (!isfinite(det) || fabs(det) < (real)det_floor) det = (real)0;
 
     dets[m] = det;
 }

@@ -1,6 +1,39 @@
 #include "sr.h"
 #include "constants.h"
 
+#include <algorithm>
+#include <cmath>
+
+// Clip energies
+ClipStats clip_stats(const std::vector<double>& E_pool, const std::vector<unsigned char>& valid_pool, std::size_t n_samples, long long n_valid) {
+    std::vector<double> E_valid;
+    E_valid.reserve(n_samples);
+    for (std::size_t i = 0; i < n_samples; i++) {
+        if (valid_pool[i]) E_valid.push_back(E_pool[i]);
+    }
+    std::nth_element(E_valid.begin(), E_valid.begin() + n_valid/2, E_valid.end());
+    double E_med = E_valid[n_valid/2];
+    double MAD = 0.0;
+    for (double e : E_valid) MAD += std::fabs(e - E_med);
+    MAD /= (double)n_valid;
+    double clip_lo = E_med - clip_mad * MAD;
+    double clip_hi = E_med + clip_mad * MAD;
+
+    const std::size_t chunk = n_samples / (std::size_t)n_thread;
+    double E_clip_sum = 0.0;
+    for (int th = 0; th < n_thread; th++) {
+        std::size_t start = (std::size_t)th * chunk;
+        std::size_t end = (th == n_thread - 1) ? n_samples : start + chunk;
+        double part = 0.0;
+        for (std::size_t i = start; i < end; i++) {
+            if (!valid_pool[i]) continue;
+            part += std::min(std::max(E_pool[i], clip_lo), clip_hi);
+        }
+        E_clip_sum += part;
+    }
+    return {clip_lo, clip_hi, E_clip_sum / (double)n_valid};
+}
+
 void SROp::init(const std::vector<double>& O_pool_, const std::vector<double>& O_exp_, std::size_t Ns_, std::size_t P_, double lambda_diag_, double eps_abs_, ThreadPool* pool_, const double* d_rms_, const uint8_t* valid_, std::size_t n_valid_) {
     // Do not copy the vector contain invdividual samples and averages of O_i = dlog psi _ dtheta_i
     O_pool = &O_pool_;

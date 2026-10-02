@@ -6,6 +6,14 @@
 
 #include "pool.h"
 
+struct ClipStats { 
+    double clip_lo;
+    double clip_hi;
+    double E_clip_mean;
+};
+
+ClipStats clip_stats(const std::vector<double>& E_pool, const std::vector<unsigned char>& valid_pool, std::size_t n_samples, long long n_valid);
+
 struct SROp {
     const std::vector<double>* O_pool = nullptr; 
     const std::vector<double>* O_exp = nullptr; 

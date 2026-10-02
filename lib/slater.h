@@ -1,6 +1,7 @@
 #pragma once
 
 #include "autodiff.h"
+#include "constants.h"
 
 #include <vector>
 #include <cmath>
@@ -30,7 +31,7 @@ T lu_det(std::vector<T>& M, int n, std::vector<int>& piv_scratch){
         }
         
         // If pivot zero determinant zero
-        if (piv_val < 1e-300) return T(0.0);
+        if (piv_val < det_floor) return T(0.0);
             
         // Store the row with the largest element in the column, if the largest in the column wasn't along the diagonal swap the rows so the diagonal has the largest value, every such swap flips sign
         piv_scratch[i] = piv_row;

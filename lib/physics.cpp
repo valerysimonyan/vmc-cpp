@@ -34,13 +34,13 @@ static EvalBuffers<T> get_buffers(Workspace& ws) {
     }
 }
 
-// Shift to center of mass coordinates
-static void shift_to_com(const double* x, Workspace& ws) {
-    if (ws.x_sh.size() != (std::size_t)D) ws.x_sh.resize(D);
+// Shift to center of mass coordinates 
+template <typename T>
+static void shift_to_com(const T* x, T* x_sh) {
     for (int d = 0; d < dim; d++) {
-        double R_cm_d = 0.0;
-        for (int i = 0; i < N; i++) R_cm_d += x[i*dim + d] / N;
-        for (int i = 0; i < N; i++) ws.x_sh[i*dim+d]= x[i*dim + d] - R_cm_d;
+        T R_cm_d = 0.0;
+        for (int i = 0; i < N; i++) R_cm_d = R_cm_d + x[i*dim + d] / N;
+        for (int i = 0; i < N; i++) x_sh[i*dim+d]= x[i*dim + d] - R_cm_d;
     }
 }
 
@@ -62,16 +62,13 @@ static T psi_impl(const double* x, const double* s, const double* t, const Ansat
         else return x[i];
     };
 
-    // Subtract COM coords dimension by dimmnsion
+    // Shift to COM coordinates for Jet and double 
     if constexpr (is_jet) {
         if (ws.jin_sh.size() != (std::size_t)D) ws.jin_sh.resize(D);
-        for (int d = 0; d < dim; d++) {
-            T R_cm_d{};
-            for (int i = 0; i < N; i++) R_cm_d = R_cm_d + coord_raw(i*dim + d) / N;
-            for (int i = 0; i < N; i++) ws.jin_sh[i*dim + d] = coord_raw(i*dim + d) - R_cm_d;
-        }
+        shift_to_com<Jet>(ws.jin.data(), ws.jin_sh.data());
     } else {
-        shift_to_com(x, ws);
+        if (ws.x_sh.size() != (std::size_t)D) ws.x_sh.resize(D);
+        shift_to_com<double>(x, ws.x_sh.data());
     }
 
     auto coord = [&](int i) -> T {
@@ -231,8 +228,9 @@ static double v_gauss_reg(double r2, double R) {
 
 // Preompute h_net and orb_net for all values of spin and isospin
 void build_st_table(const double* x, const Ansatz& a, Workspace& ws) {
-    shift_to_com(x, ws);
-
+    if (ws.x_sh.size() != (std::size_t)D) ws.x_sh.resize(D);
+    shift_to_com(x, ws.x_sh.data());
+    
     if(ws.tab_h.size() != (std::size_t)N*4*m_feat) ws.tab_h.resize((std::size_t)N*4*m_feat);
     if(ws.tab_orb.size() != (std::size_t)N*4*K*N) ws.tab_orb.resize((std::size_t)N*4*K*N  );
     if(ws.dsingle.size() != (std::size_t)(dim+2)) ws.dsingle.resize((std::size_t)(dim+2));
@@ -490,7 +488,7 @@ bool local_E(const double* x, const double* s, const double* t, const Ansatz& a,
     }
 
     // Return 0 if we hit a node, as parameters diverge we set them to zero
-    if (!std::isfinite(S) || std::fabs(S) < 1e-290) {
+    if (!std::isfinite(S) || std::fabs(S) < psi_floor) {
         ws.n_node_hits++;
         return false;
     }
@@ -502,7 +500,7 @@ bool local_E(const double* x, const double* s, const double* t, const Ansatz& a,
     // Declare Jet psi, throw error if it is different from double psi
     Jet pj = jpsi(x_vec, s_vec, t_vec, a, ws);
     bool psi_mismatch = std::fabs(pj.v - dpsi) > 1e-6 * std::max(1.0, std::fabs(dpsi));
-    if (!std::isfinite(pj.v) || std::fabs(pj.v) < 1e-290 || psi_mismatch) {
+    if (!std::isfinite(pj.v) || std::fabs(pj.v) < psi_floor || psi_mismatch) {
         ws.n_node_hits++;
         return false;
     }

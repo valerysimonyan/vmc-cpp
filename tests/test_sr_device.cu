@@ -80,7 +80,7 @@ static void test_statistics(cublasHandle_t h, ThreadPool& pool) {
     build_mask(V.d, m.d, pl.Ns);
     O_exp_device(h, O.d, m.d, pl.Ns, pl.P, pl.nv, Oexp.d);
     S_diag_device(O.d, V.d, Oexp.d, pl.Ns, pl.P, pl.nv, Sd.d);
-    const ClipStats cs = clip_stats_host(pl.E, pl.v, pl.Ns, pl.nv);
+    const ClipStats cs = clip_stats(pl.E, pl.v, pl.Ns, pl.nv);
     grad_device(h, O.d, E.d, V.d, Oexp.d, pl.Ns, pl.P, pl.nv, cs, Ec.d, gr.d);
 
     // CPU references: the functions descent() calls today
@@ -228,7 +228,7 @@ static void test_sr_real(cublasHandle_t h, ThreadPool& pool, std::vector<Workspa
         ds.v_rms_d.zero(); ds.delta_d.zero();
         build_mask(ds.valid_pool.d, ds.mask_d.d, Ns);
         O_exp_device(h, ds.O_pool.d, ds.mask_d.d, Ns, P, nv, ds.O_exp_d.d);
-        const ClipStats cs = clip_stats_host(E_h, V_h, Ns, nv);
+        const ClipStats cs = clip_stats(E_h, V_h, Ns, nv);
         grad_device(h, ds.O_pool.d, ds.E_pool.d, ds.valid_pool.d, ds.O_exp_d.d, Ns, P, nv, cs, ds.E_clip_d.d, ds.grad_d.d);
         rms_update_device(h, ds.grad_d.d, ds.v_rms_d.d, ds.d_rms_d.d, P);
         return SR_step_device(ds, h, a_dev, iter, Ns, nv, delta_d, &ndl);
@@ -236,7 +236,7 @@ static void test_sr_real(cublasHandle_t h, ThreadPool& pool, std::vector<Workspa
     Ansatz a_dev1 = a, a_dev2 = a; std::vector<double> delta_d1, delta_d2; long long ndl1 = 0, ndl2 = 0;
     const SRStepLog ld = device_step(a_dev1, delta_d1, ndl1);
     const std::vector<double> gd_real = down(ds.grad_d, P);
-    const std::vector<double> gsc_real = grad_scale(O_h, E_h, V_h, Ns, P, nv, clip_stats_host(E_h, V_h, Ns, nv), Oexp_c);
+    const std::vector<double> gsc_real = grad_scale(O_h, E_h, V_h, Ns, P, nv, clip_stats(E_h, V_h, Ns, nv), Oexp_c);
     double wg = 0; for (std::size_t k = 0; k < P; k++) wg = std::max(wg, std::fabs(gd_real[k] - grad_c[k]) / gsc_real[k]);
     const SRStepLog ld2 = device_step(a_dev2, delta_d2, ndl2);
 

@@ -161,3 +161,7 @@ inline constexpr int opool_stage_rows = 1024;
 // Transfer Learning Settings
 inline constexpr bool resume = false;             // Load best_checkpoint.txt at startup if present
 inline constexpr const char* transfer_from = "";  // Path to a source checkpoint; empty = disabled
+
+// Numerical floors for pivot/determinant and for nodes of psi
+inline constexpr double det_floor = 1e-300;
+inline constexpr double psi_floor = 1e-290;

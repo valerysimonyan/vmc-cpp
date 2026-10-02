@@ -256,9 +256,10 @@ DescentResult descent_mg(Ansatz& a) {
         std::vector<MgRep> M;
         for (Replica& R : Rs) M.push_back(MgRep{R.ds.get(), R.h, R.dev, (std::size_t)R.B * (std::size_t)records_now});
         O_exp_mg(M, n_params, bs.n_valid);
-        const ClipStats clip = clip_stats_host(E_all, valid_all, E_all.size(), bs.n_valid);
+        const ClipStats clip = clip_stats(E_all, valid_all, E_all.size(), bs.n_valid);
         grad_mg(M, n_params, bs.n_valid, clip);
         r.El_err = batch_error(bs);
+        
         // Checkpointing for best energy
         const double E_ucb = r.El_exp + r.El_err;
         if (i >= N_gd && E_ucb < best_E_ucb && r.El_exp < diss_threshold) {

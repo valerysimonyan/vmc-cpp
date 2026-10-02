@@ -173,55 +173,32 @@ void compute_obs(const BatchStats& bs, DescentResult& r, std::size_t P, const st
 
     masked_O_exp(O_pool, valid_pool, n_samples, P, pool, O_exp);
     
-    // Clip energy for gradient, nth_element places the nth element, in this case the median, where it would be if the array were sorted but nothing else is sorted
-    static std::vector<double> E_valid;
-    E_valid.clear();
-    E_valid.reserve(n_samples);
-    for (std::size_t i = 0; i < n_samples; i++) {
-        if (valid_pool[i]) E_valid.push_back(E_pool[i]);
-    }
+    // Clipped energies for the gradient (bounds and mean shared with the GPU path)
+    const ClipStats clip = clip_stats(E_pool, valid_pool, n_samples, bs.n_valid);
 
-    std::nth_element(E_valid.begin(), E_valid.begin() + bs.n_valid/2, E_valid.end());
-    double E_med = E_valid[bs.n_valid/2];
-    
-    // Caculate average deviation from the median
-    double MAD = 0.0;
-    for (double e : E_valid) MAD += std::fabs(e - E_med);
-    MAD /= (double)bs.n_valid;
-
-    // Bounds on valid energies for gradient calculation
-    double clip_lo = E_med - clip_mad * MAD;
-    double clip_hi = E_med + clip_mad * MAD;
-
+    // Compute gradient in parallel across threads
     int n_workers = pool -> n_workers();
     static std::vector<double> grad_partials;
-    static std::vector<double> E_clip_sum_partials;
     if (grad_partials.size() != (std::size_t)n_workers*P) grad_partials.assign((std::size_t)n_workers*P, 0.0);
-    if (E_clip_sum_partials.size() != (std::size_t)n_workers) E_clip_sum_partials.assign(n_workers, 0.0);
-    
+
     std::size_t chunk = n_samples / n_workers;
     pool -> run([&](int th) {
         std::size_t start = (std::size_t)th * chunk;
         std::size_t end = (th == n_workers-1) ? n_samples : start+chunk;
         for (std::size_t k = 0; k < P; k++) grad_partials[(std::size_t)th*P + k] = 0.0;
-        double e_clip_sum = 0.0;
         for (std::size_t i = start; i < end; i++) {
             if (!valid_pool[i]) continue;
-            double e_clip = std::min(std::max(E_pool[i], clip_lo), clip_hi);
-            e_clip_sum += e_clip;
+            double e_clip = std::min(std::max(E_pool[i], clip.clip_lo), clip.clip_hi);
             for (std::size_t k = 0; k < P; k++) grad_partials[(std::size_t)th*P + k] += e_clip * O_pool[i*P + k];
         }
-        E_clip_sum_partials[th] = e_clip_sum;
     });
 
+    // Reduce across threads and compute final gradient
     grad.assign(P, 0.0);
-    double E_clip_sum = 0.0;
-    for (int th = 0; th < n_workers; th++) {
-        E_clip_sum += E_clip_sum_partials[th];
+    for (int th = 0; th < n_workers; th++)
         for (std::size_t k = 0; k < P; k++) grad[k] += grad_partials[(std::size_t)th*P + k];
-    }
-    double E_clip_mean = E_clip_sum / (double)bs.n_valid;
-    for (std::size_t k = 0; k < P; k++) grad[k] = 2.0 * (grad[k]/(double)bs.n_valid - E_clip_mean * O_exp[k]);
+    for (std::size_t k = 0; k < P; k++) grad[k] = 2.0 * (grad[k]/(double)bs.n_valid - clip.E_clip_mean * O_exp[k]);
+
 }
 
 // Run descent across threads
@@ -391,7 +368,9 @@ DescentResult descent(Ansatz& a) {
             O_exp_device(cublas, ds.O_pool.d, ds.mask_d.d, n_samples, n_params, bs.n_valid, ds.O_exp_d.d);
         }
         ClipStats clip{};
-        { VMC_PROF_HOST("/host/clip_stats"); clip = clip_stats_host(it.E_pool, it.valid_pool, n_samples, bs.n_valid); }
+        { 
+            VMC_PROF_HOST("/host/clip_stats"); clip = clip_stats(it.E_pool, it.valid_pool, n_samples, bs.n_valid); 
+        }
         {
             VMC_PROF("/sr/grad", 0);
             grad_device(cublas, ds.O_pool.d, ds.E_pool.d, ds.valid_pool.d, ds.O_exp_d.d, n_samples, n_params, bs.n_valid,

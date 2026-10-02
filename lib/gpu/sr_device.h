@@ -2,6 +2,7 @@
 
 #include "layouts.h"
 #include "../cg.h"
+#include "../sr.h"
 #include "../descent.h"
 
 #include <functional>
@@ -17,12 +18,7 @@ void S_diag_device(const opool_t* O_pool, const unsigned char* valid, const doub
 
 double rms_update_device(cublasHandle_t h, const double* grad, double* v_rms, double* d_rms, std::size_t P, cudaStream_t stream = 0);
 
-
-struct ClipStats { double clip_lo, clip_hi, E_clip_mean; };
-
-ClipStats clip_stats_host(const std::vector<double>& E_pool, const std::vector<unsigned char>& valid_pool, std::size_t n_samples, long long n_valid);
 void grad_device(cublasHandle_t h, const opool_t* O_pool, const double* E_pool, const unsigned char* valid, const double* O_exp, std::size_t Ns, std::size_t P, long long n_valid, const ClipStats& cs, double* E_clip, double* grad, cudaStream_t stream = 0);
-
 
 struct SROpDevice {
     cublasHandle_t h = nullptr;
