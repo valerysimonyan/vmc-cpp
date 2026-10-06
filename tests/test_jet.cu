@@ -8,7 +8,7 @@
 #include "../tests/test_tolerances.h"
 #include "../lib/gpu/jet_kernels.h"
 #include "../lib/gpu/net_forward.h"
-#include "../lib/physics.h"
+#include "../lib/wavefunction.h"
 #include "../lib/network.h"
 #include "../tests/test_common.h"
 #include <cublas_v2.h>

@@ -10,7 +10,7 @@
 //
 // Call this immediately after constructing any Ansatz used by a test.
 
-#include "../lib/physics.h"
+#include "../lib/wavefunction.h"
 
 #include <random>
 

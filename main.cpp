@@ -4,7 +4,7 @@
 #include <string>
 
 #include "lib/config.h"
-#include "lib/physics.h"
+#include "lib/wavefunction.h"
 #include "lib/descent.h"
 #include "lib/constants.h"
 #include "lib/network.h"

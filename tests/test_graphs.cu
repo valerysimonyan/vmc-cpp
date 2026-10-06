@@ -9,7 +9,7 @@
 #include "../lib/gpu/det_kernels.h"
 #include "../lib/gpu/gpu_sampler.h"
 #include "../lib/gpu/sampler_kernels.h"
-#include "../lib/physics.h"
+#include "../lib/wavefunction.h"
 #include "../lib/walkers.h"
 #include "../lib/pool.h"
 #include "../tests/test_common.h"

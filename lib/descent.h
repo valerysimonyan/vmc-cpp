@@ -2,7 +2,7 @@
 
 #include <vector>
 
-#include "physics.h"
+#include "wavefunction.h"
 #include "sr.h"
 #include "pool.h"
 #include "checkpoint.h"

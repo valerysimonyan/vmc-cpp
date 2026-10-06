@@ -8,7 +8,7 @@
 #include "../lib/precision.h"
 #include "../lib/gpu/gpu_util.h"
 #include "../lib/gpu/smoke.h"
-#include "../lib/physics.h"
+#include "../lib/wavefunction.h"
 #include "../lib/walkers.h"
 #include "../lib/pool.h"
 #include "../tests/test_common.h"

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../constants.h"
-#include "../physics.h"
+#include "../wavefunction.h"
 #include "../walkers.h"
 #include "../precision.h"
 #include "gpu_util.h"

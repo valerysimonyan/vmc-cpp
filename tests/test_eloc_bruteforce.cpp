@@ -3,7 +3,7 @@
 // rank-2 update, no Jastrow label correction. O = d log|psi| / d theta is checked against finite differences.
 // The test shares only psi() and the model-o constants with local_E, so it keeps its meaning after the CPU
 // and GPU code share one copy of the Hamiltonian formulas.
-#include "../lib/physics.h"
+#include "../lib/local_energy.h"
 #include "../lib/constants.h"
 #include "test_common.h"
 

@@ -1,5 +1,5 @@
 #include "det_kernels.h"
-#include "../physics.h"
+#include "../wavefunction.h"
 #include "../envelope.h"
 
 #include <cmath>

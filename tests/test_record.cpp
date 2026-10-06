@@ -1,6 +1,6 @@
 #include "../lib/walkers.h"
 #include "../lib/envelope.h"
-#include "../lib/physics.h"
+#include "../lib/local_energy.h"
 #include "../lib/constants.h"
 #include "../lib/network.h"
 #include "../lib/pool.h"

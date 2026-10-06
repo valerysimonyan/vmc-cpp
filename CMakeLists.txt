@@ -63,9 +63,10 @@ endif()
 
 
 set(VMC_SOURCES
-    lib/walkers.cpp lib/physics.cpp lib/slater.cpp lib/util.cpp
-    lib/pool.cpp    lib/sr.cpp      lib/cg.cpp     lib/descent.cpp lib/descent_mg.cpp
-    lib/config.cpp lib/checkpoint.cpp)
+    lib/walkers.cpp   lib/wavefunction.cpp lib/local_energy.cpp
+    lib/slater.cpp    lib/util.cpp         lib/pool.cpp    
+    lib/sr.cpp        lib/cg.cpp           lib/descent.cpp 
+    lib/descent_mg.cpp lib/config.cpp       lib/checkpoint.cpp)
 
 add_library(vmc_core STATIC ${VMC_SOURCES})
 if(VMC_REAL32)

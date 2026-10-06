@@ -163,12 +163,6 @@ double S_from_table(const std::vector<double>& s, const std::vector<double>& t, 
 
 double swap_ratio(const std::vector<double>& s, const std::vector<double>& t, int i, int j, double s_new_i, double t_new_i, double s_new_j, double t_new_j, double S0, bool use_rank2, const Ansatz& a, Workspace& ws);
 
-double V_3N(const std::vector<double>& x);
-
-double V_coulomb(const std::vector<double>& x, const std::vector<double>& t);
-
-double l2_local(const double* x_shifted, const double* grad, double psi_val);
-
-bool local_E(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, std::vector<double>& O_out, double& E_out);
+void fill_O(const Ansatz& a, Workspace& ws, double S, std::vector<double>& O_out, const double* s, const double* t);
 
 void assemble_O(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, std::vector<double>& O_out);

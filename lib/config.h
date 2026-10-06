@@ -1,6 +1,6 @@
 #pragma once
 
-#include "physics.h"
+#include "wavefunction.h"
 
 void validate_config(const Ansatz& a);
 

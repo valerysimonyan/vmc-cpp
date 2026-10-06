@@ -28,7 +28,7 @@
 #include "../lib/sr.h"
 #include "../lib/cg.h"
 #include "../lib/checkpoint.h"
-#include "../lib/physics.h"
+#include "../lib/wavefunction.h"
 #include "../lib/walkers.h"
 #include "../lib/pool.h"
 #include "../tests/test_common.h"

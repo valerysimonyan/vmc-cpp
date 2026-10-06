@@ -10,7 +10,7 @@
 #include "../lib/gpu/compose_kernels.h"
 #include "../lib/gpu/jet_eval.h"
 #include "../lib/gpu/eval.h"
-#include "../lib/physics.h"
+#include "../lib/local_energy.h"
 #include "../lib/slater.h"
 #include "../tests/test_common.h"
 #include <cublas_v2.h>

@@ -1,5 +1,5 @@
 
-#include "physics.h"
+#include "wavefunction.h"
 #include "constants.h"
 #include "util.h"
 #include "sr.h"

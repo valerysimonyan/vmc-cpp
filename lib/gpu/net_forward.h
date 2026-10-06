@@ -3,7 +3,7 @@
 #include "layouts.h"
 #include "net_kernels.h"
 #include "../network.h"
-#include "../physics.h"
+#include "../wavefunction.h"
 
 #include <vector>
 

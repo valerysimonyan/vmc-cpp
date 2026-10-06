@@ -5,7 +5,7 @@
 #include <vector> 
 
 #include "constants.h"
-#include "physics.h"
+#include "wavefunction.h"
 #include "pool.h"
 #include "rng_common.h"
 

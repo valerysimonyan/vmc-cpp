@@ -2,7 +2,7 @@
 
 #include <string> 
 
-#include "physics.h"
+#include "wavefunction.h"
 
 void save_checkpoint(const std::string& path, const Ansatz& a);
 

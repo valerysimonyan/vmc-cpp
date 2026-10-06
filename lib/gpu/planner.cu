@@ -1,7 +1,7 @@
 #include "planner.h"
 #include "arena.h"
 #include "gpu_util.h"
-#include "../physics.h"
+#include "../wavefunction.h"
 
 #include <nvml.h>
 

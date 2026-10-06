@@ -3,7 +3,7 @@
 // SAME checkpoint can be evaluated by both samplers for a cross-sampler check.
 #include "../lib/checkpoint.h"
 #include "../lib/descent.h"
-#include "../lib/physics.h"
+#include "../lib/wavefunction.h"
 
 #include <cstdio>
 #include <cstdlib>

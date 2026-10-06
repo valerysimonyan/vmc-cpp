@@ -1,7 +1,7 @@
 #pragma once
 
 #include "layouts.h"
-#include "../physics.h"
+#include "../wavefunction.h"
 
 #include <vector>
 

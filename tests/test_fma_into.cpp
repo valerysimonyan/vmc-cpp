@@ -13,7 +13,7 @@
 // accumulation shifts both equally and slips through. This file keeps a
 // test-local replica of the ORIGINAL loop as the oracle, the same pattern as
 // lu_det<Jet> in test_detjet and legacy_local_E in test_record.
-#include "../lib/physics.h"
+#include "../lib/wavefunction.h"
 #include "test_common.h"
 #include "../lib/network.h"
 #include "../lib/autodiff.h"
