@@ -1,4 +1,4 @@
-#include "local_energy.h"
+#include "hamiltonian.h"
 #include "constants.h"
 #include "envelope.h"
 
@@ -13,7 +13,7 @@ static double v_gauss_reg(double r2, double R) {
 
 
 // Model O 3-body interaction
-double V_3N(const std::vector<double>& x) {
+double V_3N(const double* x) {
     if (N < 3) return 0;
 
     double V = 0.0;
@@ -48,7 +48,7 @@ static double coulomb_shape(double r) {
 }
 
 // Coulomb interaction between protons, account for finite size effects
-double V_coulomb(const std::vector<double>& x, const std::vector<double>& t) {
+double V_coulomb(const double* x, const double* t) {
     double V = 0.0;
     for (int i = 0; i < N; i++) {
         if (t[i] < 0.0) continue;
@@ -101,12 +101,8 @@ bool local_E(const double* x, const double* s, const double* t, const Ansatz& a,
         return false;
     }
 
-    std::vector<double> x_vec(x, x+D);
-    std::vector<double> s_vec(s, s+N);
-    std::vector<double> t_vec(t, t+N);
-
     // Declare Jet psi, throw error if it is different from double psi
-    Jet pj = jpsi(x_vec, s_vec, t_vec, a, ws);
+    Jet pj = jpsi(x, s, t, a, ws);
     bool psi_mismatch = std::fabs(pj.v - dpsi) > 1e-6 * std::max(1.0, std::fabs(dpsi));
     if (!std::isfinite(pj.v) || std::fabs(pj.v) < psi_floor || psi_mismatch) {
         ws.n_node_hits++;
@@ -124,7 +120,7 @@ bool local_E(const double* x, const double* s, const double* t, const Ansatz& a,
     }
 
     if (nuc_3N) {
-        E_loc += V_3N(x_vec);
+        E_loc += V_3N(x);
         if (!std::isfinite(E_loc)) {
             ws.n_node_hits++;
             return false;
@@ -132,7 +128,7 @@ bool local_E(const double* x, const double* s, const double* t, const Ansatz& a,
     }
 
     if (nuc_coulomb) {
-        E_loc += V_coulomb(x_vec, t_vec);
+        E_loc += V_coulomb(x, t);
         if (!std::isfinite(E_loc)) {
             ws.n_node_hits++;
             return false;
@@ -172,16 +168,16 @@ bool local_E(const double* x, const double* s, const double* t, const Ansatz& a,
                 double R_s, R_t, R_st;
                 if (same_s) {
                     R_s = 1.0;
-                    R_t = swap_ratio(s_vec, t_vec, i, j, s[i], t[j], s[j], t[i], S0, use_rank2, a, ws);
+                    R_t = swap_ratio(s, t, i, j, s[i], t[j], s[j], t[i], S0, use_rank2, a, ws);
                     R_st = R_s * R_t;
                 } else if (same_t) {
                     R_t = 1.0;
-                    R_s = swap_ratio(s_vec, t_vec, i, j, s[j], t[i], s[i], t[j], S0, use_rank2, a, ws);
+                    R_s = swap_ratio(s, t, i, j, s[j], t[i], s[i], t[j], S0, use_rank2, a, ws);
                     R_st = R_s * R_t;
                 } else {
-                    R_t = swap_ratio(s_vec, t_vec, i, j, s[i], t[j], s[j], t[i], S0, use_rank2, a, ws);
-                    R_s = swap_ratio(s_vec, t_vec, i, j, s[j], t[i], s[i], t[j], S0, use_rank2, a, ws);
-                    R_st = swap_ratio(s_vec, t_vec, i, j, s[j], t[j], s[i], t[i], S0, use_rank2, a, ws);
+                    R_t = swap_ratio(s, t, i, j, s[i], t[j], s[j], t[i], S0, use_rank2, a, ws);
+                    R_s = swap_ratio(s, t, i, j, s[j], t[i], s[i], t[j], S0, use_rank2, a, ws);
+                    R_st = swap_ratio(s, t, i, j, s[j], t[j], s[i], t[i], S0, use_rank2, a, ws);
                 }
                 // Channel-dependent Jastrow: exchange ratios pick up exp(dJ)
                 if (n_jas_cls > 1) {   

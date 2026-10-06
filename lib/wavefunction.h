@@ -148,20 +148,16 @@ struct Workspace {
 bool rank2_well_conditioned(const Workspace& ws);
 
 double psi(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, bool need_inv = false);
-double psi(const std::vector<double>& x, const std::vector<double>& s, const std::vector<double>& t, const Ansatz& a, Workspace& ws, bool need_inv = false);
 
 double log_p(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws);
-double log_p(const std::vector<double>& x, const std::vector<double>& s, const std::vector<double>& t, const Ansatz& a, Workspace& ws);
 
-Jet jpsi(const std::vector<double>& x, const std::vector<double>& s, const std::vector<double>& t, const Ansatz& a, Workspace& ws);
+Jet jpsi(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws);
 
 void build_st_table(const double* x, const Ansatz& a, Workspace& ws);
-void build_st_table(const std::vector<double>& x, const Ansatz& a, Workspace& ws);
 
 double S_from_table(const double* s, const double* t, const Ansatz& a, Workspace& ws);
-double S_from_table(const std::vector<double>& s, const std::vector<double>& t, const Ansatz& a, Workspace& ws);
 
-double swap_ratio(const std::vector<double>& s, const std::vector<double>& t, int i, int j, double s_new_i, double t_new_i, double s_new_j, double t_new_j, double S0, bool use_rank2, const Ansatz& a, Workspace& ws);
+double swap_ratio(const double* s, const double* t, int i, int j, double s_new_i, double t_new_i, double s_new_j, double t_new_j, double S0, bool use_rank2, const Ansatz& a, Workspace& ws);
 
 void fill_O(const Ansatz& a, Workspace& ws, double S, std::vector<double>& O_out, const double* s, const double* t);
 

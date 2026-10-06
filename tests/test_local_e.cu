@@ -7,7 +7,7 @@
 #include "../lib/gpu/exchange_kernels.h"
 #include "../lib/gpu/local_e.h"
 #include "../lib/gpu/gpu_sampler.h"
-#include "../lib/local_energy.h"
+#include "../lib/hamiltonian.h"
 #include "../lib/envelope.h"
 #include "../lib/walkers.h"
 #include "../lib/pool.h"

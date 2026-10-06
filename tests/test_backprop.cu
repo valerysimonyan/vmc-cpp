@@ -9,7 +9,7 @@
 #include "../tests/test_tolerances.h"
 #include "../lib/gpu/backprop.h"
 #include "../lib/gpu/local_e.h"
-#include "../lib/local_energy.h"
+#include "../lib/hamiltonian.h"
 #include "../lib/network.h"
 #include "../tests/test_common.h"
 #include <cublas_v2.h>

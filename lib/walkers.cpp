@@ -1,5 +1,5 @@
 #include "walkers.h"
-#include "local_energy.h"
+#include "hamiltonian.h"
 #include "envelope.h"
 #include "seed.h"
 

@@ -173,7 +173,7 @@ int ex_fallback_host(DeviceState& ds, const Ansatz& a, Workspace& ws, int B) {
                     for (int q = 0; q < N; q++) { s_sw[q] = (double)hs[q]; t_sw[q] = (double)ht[q]; }
                     s_sw[pi] = (double)sni; t_sw[pi] = (double)tni;
                     s_sw[pj] = (double)snj; t_sw[pj] = (double)tnj;
-                    Sw[ls] = (real)S_from_table(s_sw, t_sw, a, ws);
+                    Sw[ls] = (real)S_from_table(s_sw.data(), t_sw.data(), a, ws);
                 }
             }
         }

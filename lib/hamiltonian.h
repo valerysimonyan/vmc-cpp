@@ -4,9 +4,9 @@
 
 #include <vector>
 
-double V_3N(const std::vector<double>& x);
+double V_3N(const double* x);
 
-double V_coulomb(const std::vector<double>& x, const std::vector<double>& t);
+double V_coulomb(const double* x, const double* t);
 
 double l2_local(const double* x_shifted, const double* grad, double psi_val);
 

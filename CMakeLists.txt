@@ -63,7 +63,7 @@ endif()
 
 
 set(VMC_SOURCES
-    lib/walkers.cpp   lib/wavefunction.cpp lib/local_energy.cpp
+    lib/walkers.cpp   lib/wavefunction.cpp lib/hamiltonian.cpp
     lib/slater.cpp    lib/util.cpp         lib/pool.cpp    
     lib/sr.cpp        lib/cg.cpp           lib/descent.cpp 
     lib/descent_mg.cpp lib/config.cpp       lib/checkpoint.cpp)

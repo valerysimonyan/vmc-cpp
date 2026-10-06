@@ -3,7 +3,7 @@
 // Test 1 is the load-bearing one. Tests 2-4 do not exist elsewhere in the repo
 // (there were no psi-level FD, antisymmetry or translation-invariance
 // regressions before this file), so they are written here rather than re-run.
-#include "../lib/local_energy.h"
+#include "../lib/hamiltonian.h"
 #include "../lib/envelope.h"
 #include "../lib/slater.h"
 #include "../lib/network.h"

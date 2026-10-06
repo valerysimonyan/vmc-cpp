@@ -202,9 +202,6 @@ static T psi_impl(const double* x, const double* s, const double* t, const Ansat
 double psi (const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, bool need_inv) {
     return psi_impl<double>(x, s, t, a, ws, need_inv);
 }
-double psi (const std::vector<double>& x, const std::vector<double>& s, const std::vector<double>& t, const Ansatz& a, Workspace& ws, bool need_inv) {
-    return psi(x.data(), s.data(), t.data(), a, ws, need_inv);
-}
 
 // Store log psi for regular use, if on node return 0
 double log_p (const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws) {
@@ -212,13 +209,10 @@ double log_p (const double* x, const double* s, const double* t, const Ansatz& a
     if (p == 0.0) return -std::numeric_limits<double>::infinity();
     return std::log(std::abs(p));
 }
-double log_p (const std::vector<double>& x, const std::vector<double>& s, const std::vector<double>& t, const Ansatz& a, Workspace& ws) {
-    return log_p(x.data(),s.data(),t.data(), a, ws);
-}
 
 // Jet evaluation of psi
-Jet jpsi (const std::vector<double>& x, const std::vector<double>& s, const std::vector<double>& t, const Ansatz& a, Workspace& ws) {
-     return psi_impl<Jet>(x.data(), s.data(), t.data(), a, ws, false);
+Jet jpsi (const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws) {
+    return psi_impl<Jet>(x, s, t, a, ws, false);
 }
 
 // Preompute h_net and orb_net for all values of spin and isospin
@@ -251,9 +245,6 @@ void build_st_table(const double* x, const Ansatz& a, Workspace& ws) {
     }
     ws.table_valid = true;
 }
-void build_st_table(const std::vector<double>& x, const Ansatz& a, Workspace& ws) {
-    build_st_table(x.data(), a, ws);
-}
 
 // Given a value of s and t draw from precomputed table instead of computing from scratch
 double S_from_table(const double* s, const double* t, const Ansatz& a, Workspace& ws) {
@@ -285,9 +276,6 @@ double S_from_table(const double* s, const double* t, const Ansatz& a, Workspace
     }
     return S;
 }
-double S_from_table(const std::vector<double>& s, const std::vector<double>& t, const Ansatz& a, Workspace& ws) {
-    return S_from_table(s.data(), t.data(), a, ws);
-}
 
 // Find the largest determinant by magnitude, if the largest is still within machine precision 0 return false, matrix is singular
 bool rank2_well_conditioned(const Workspace& ws) {
@@ -301,7 +289,7 @@ bool rank2_well_conditioned(const Workspace& ws) {
 }
 
 // Compute updated psi ratio table from swapped s, and t
-double swap_ratio(const std::vector<double>& s, const std::vector<double>& t, int i, int j, double s_new_i, double t_new_i, double s_new_j, double t_new_j, double S0, bool use_rank2, const Ansatz& a, Workspace& ws) {
+double swap_ratio(const double* s, const double* t, int i, int j, double s_new_i, double t_new_i, double s_new_j, double t_new_j, double S0, bool use_rank2, const Ansatz& a, Workspace& ws) {
     if (use_rank2) {
         int c_old_i = st_combo(s[i], t[i]);
         int c_old_j = st_combo(s[j], t[j]);
@@ -344,7 +332,7 @@ double swap_ratio(const std::vector<double>& s, const std::vector<double>& t, in
     double si = ws.s_swap[i], ti = ws.t_swap[i], sj = ws.s_swap[j], tj = ws.t_swap[j];
     ws.s_swap[i] = s_new_i; ws.t_swap[i] = t_new_i;
     ws.s_swap[j] = s_new_j; ws.t_swap[j] = t_new_j;
-    double R = S_from_table(ws.s_swap, ws.t_swap, a, ws) / S0;
+    double R = S_from_table(ws.s_swap.data(), ws.t_swap.data(), a, ws) / S0;
     ws.s_swap[i] = si; ws.t_swap[i] = ti;
     ws.s_swap[j] = sj; ws.t_swap[j] = tj;
     return R;
@@ -382,8 +370,6 @@ void fill_O(const Ansatz& a, Workspace& ws, double S, std::vector<double>& O_out
     double feat[n_jas_par + 1];
     envelope::jastrow_O<double, double>(ws.x_sh.data(), s, t, feat);
     for (int m = 0; m < n_jas_par; m++) O_out[n_h+n_rho+n_orb+1+m] = feat[m];
-
-
 }
 
 void assemble_O(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, std::vector<double>& O_out) {
