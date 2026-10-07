@@ -1,6 +1,7 @@
 #include "exchange_kernels.h"
 #include "arena.h"
 #include "../envelope.h"
+#include "../hamiltonian.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -183,33 +184,12 @@ int ex_fallback_host(DeviceState& ds, const Ansatz& a, Workspace& ws, int B) {
     return n_fallback;
 }
 
-__device__ __forceinline__ real dev_coulomb_shape(real r) {
-    const real x = (real)b_coul * r;
-    if (x < (real)1e-3) return (real)b_coul * ((real)(5.0/16.0) - x*x/(real)96.0);
-    const real F = (real)1.0 - ((real)1.0 + (real)11.0*x/(real)16.0 + (real)3.0*x*x/(real)16.0 + x*x*x/(real)48.0) * exp(-x);
-    return F / r;
-}
 
 // Evaluate proton proton repulsion term
 __global__ void coulomb_kernel(const real* __restrict__ x, const real* __restrict__ t, real* __restrict__ V_coul, int B) {
     const int w = blockIdx.x * blockDim.x + threadIdx.x;
     if (w >= B) return;
-    const real* xw = x + (std::size_t)w * D;
-    const real* tw = t + (std::size_t)w * N;
-    real V = (real)0;
-    for (int i = 0; i < N; i++) {
-        if (tw[i] < (real)0) continue;
-        for (int j = i+1; j < N; j++) {
-            if (tw[j] < (real)0) continue;
-            real r2 = (real)0;
-            for (int d = 0; d < dim; d++) {
-                const real diff = xw[i*dim + d] - xw[j*dim + d];
-                r2 += diff * diff;
-            }
-            V += dev_coulomb_shape(sqrt(r2));
-        }
-    }
-    V_coul[w] = (real)alpha_em * (real)hbarc * V;
+    V_coul[w] = V_coulomb(x + (std::size_t)w * D, t + (std::size_t)w * N);
 }
 
 void coulomb_batch(const real* x, const real* t, real* V_coul, int B, cudaStream_t stream) {
@@ -220,7 +200,7 @@ void coulomb_batch(const real* x, const real* t, real* V_coul, int B, cudaStream
 }
 
 // Combine everything into E_loc
-__global__ void ex_assemble_kernel(const real* __restrict__ x, const real* __restrict__ s, const real* __restrict__ t, const int* __restrict__ pair_ij, const real* __restrict__ S_swap, const real* __restrict__ S0, const real* __restrict__ E_kin, const real* __restrict__ v3n, const real* __restrict__ V_coul, const unsigned char* __restrict__ valid_jet, real* __restrict__ V_nuc_out, real* __restrict__ E_loc, unsigned char* __restrict__ valid_loc, real pi15, const real* __restrict__ jc, int B) {
+__global__ void ex_assemble_kernel(const real* __restrict__ x, const real* __restrict__ s, const real* __restrict__ t, const real* __restrict__ S_swap, const real* __restrict__ S0, const real* __restrict__ E_kin, const real* __restrict__ v3n, const real* __restrict__ V_coul, const unsigned char* __restrict__ valid_jet, real* __restrict__ V_nuc_out, real* __restrict__ E_loc, unsigned char* __restrict__ valid_loc, const real* __restrict__ jc, int B) {
     const int w = blockIdx.x * blockDim.x + threadIdx.x;
     if (w >= B) return;
     const std::size_t per_w = (std::size_t)ex_types * ex_npairs;
@@ -234,51 +214,10 @@ __global__ void ex_assemble_kernel(const real* __restrict__ x, const real* __res
     if (nuc_coulomb) E += V_coul[w];
 
     real V_nuc = (real)0;
+    // Exchange ratio from the precomputed swapped amplitudes of this walker
     if (nuc_pot != NucPot::Off) {
-        for (int p = 0; p < ex_npairs; p++) {
-            const int i = pair_ij[2*p], j = pair_ij[2*p + 1];
-            const bool same_s = (sw[i] == sw[j]);
-            const bool same_t = (tw[i] == tw[j]);
-            if (same_s && same_t) continue;
-
-            real r2 = (real)0;
-            for (int d = 0; d < dim; d++) {
-                const real diff = xw[i*dim + d] - xw[j*dim + d];
-                r2 += diff * diff;
-            }
-            const real v01 = exp(-r2 / (real)(R01*R01)) / (pi15 * (real)R01*(real)R01*(real)R01);
-            const real v10 = exp(-r2 / (real)(R10*R10)) / (pi15 * (real)R10*(real)R10*(real)R10);
-
-            const std::size_t base = (std::size_t)w * per_w + (std::size_t)p * ex_types;
-            real R_s, R_t, R_st;
-            if (same_s) {
-                R_s = (real)1.0;
-                R_t = S_swap[base + EX_T] / S0w;
-                R_st = R_s * R_t;
-            } else if (same_t) {
-                R_t = (real)1.0;
-                R_s = S_swap[base + EX_S] / S0w;
-                R_st = R_s * R_t;
-            } else {
-                R_t  = S_swap[base + EX_T]  / S0w;
-                R_s  = S_swap[base + EX_S]  / S0w;
-                R_st = S_swap[base + EX_ST] / S0w;
-            }
-
-            if (n_jas_cls > 1) {   // channel-dependent Jastrow: exchange ratios pick up exp(dJ)
-                real s1[N], t1[N];
-                for (int q = 0; q < N; q++) { s1[q] = sw[q]; t1[q] = tw[q]; }
-                const real si = sw[i], sj = sw[j], ti = tw[i], tj = tw[j];
-                s1[i] = sj; s1[j] = si;   // spin exchange
-                const real dS = envelope::jastrow_dlabel<real, real>(xw, sw, tw, s1, tw, jc);
-                t1[i] = tj; t1[j] = ti;   // spin + isospin exchange
-                const real dST = envelope::jastrow_dlabel<real, real>(xw, sw, tw, s1, t1, jc);
-                const real dT = envelope::jastrow_dlabel<real, real>(xw, sw, tw, sw, t1, jc);
-                R_s *= exp(dS); R_t *= exp(dT); R_st *= exp(dST);
-            }
-
-            V_nuc += (real)(hbarc/4.0) * ((real)C01*v01*((real)1.0 + R_t - R_s - R_st) + (real)C10*v10*((real)1.0 - R_t + R_s - R_st));
-        }
+        auto ratio = [&](int p, int, int, int type) { return S_swap[(std::size_t)w * per_w + (std::size_t)p * ex_types + type] / S0w; };
+        V_nuc = V_2N(xw, sw, tw, jc, ratio);
         E += V_nuc;
     }
 
@@ -287,11 +226,10 @@ __global__ void ex_assemble_kernel(const real* __restrict__ x, const real* __res
     valid_loc[w] = (valid_jet[w] && isfinite(E)) ? 1 : 0;
 }
 
-void ex_assemble(const real* x, const real* s, const real* t, const int* pair_ij, const real* S_swap, const real* S0, const real* E_kin, const real* v3n, const real* V_coul, const unsigned char* valid_jet, real* V_nuc, real* E_loc, unsigned char* valid_loc, int B, const real* params, std::size_t P, cudaStream_t stream) {
+void ex_assemble(const real* x, const real* s, const real* t, const real* S_swap, const real* S0, const real* E_kin, const real* v3n, const real* V_coul, const unsigned char* valid_jet, real* V_nuc, real* E_loc, unsigned char* valid_loc, int B, const real* params, std::size_t P, cudaStream_t stream) {
     if (B <= 0) return;
-    const real pi15 = (real)std::pow(3.14159265358979323846, 1.5);
     const int threads = 128;
-    ex_assemble_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(x, s, t, pair_ij, S_swap, S0, E_kin, v3n, V_coul, valid_jet, V_nuc, E_loc, valid_loc, pi15, params + (P - envelope::n_params_env) + 1, B);
+    ex_assemble_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(x, s, t, S_swap, S0, E_kin, v3n, V_coul, valid_jet, V_nuc, E_loc, valid_loc, params + (P - envelope::n_params_env) + 1, B);
     cuda_sync_check("ex_assemble");
 }
 

@@ -8,6 +8,24 @@
 #include "network.h"
 #include "constants.h"
 #include "autodiff.h"
+#include "envelope.h"
+
+// Compose FermiSets sum
+template <typename T>
+VMC_HD inline T S_sum(const T* rho, const T* dets) {
+    T S = T(0);
+    for (int k = 0; k < K; k++) S += rho[k] * dets[k];
+    return S;
+}
+
+
+// Evaluate log|Ψ| = log|envelope| + log|S|
+template <typename T, typename L>
+VMC_HD inline T log_psi(T alpha, const T* jc, const T* x_sh, const L* s, const L* t, T S) {
+    using std::isfinite; using std::log; using std::fabs;
+    if (!(S != T(0)) || !isfinite(S)) return T(-INFINITY);
+    return envelope::log_env_J(alpha, jc, x_sh, s, t) + log(fabs(S));
+}
 
 struct Ansatz {
     Network h_net;    // dim -> m_feat

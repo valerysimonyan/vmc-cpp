@@ -661,10 +661,10 @@ static void test_logpsi_nodes(const Ansatz& a, cublasHandle_t handle) {
           "a forced-node configuration was not suppressed: " + std::to_string(suppressed)
           + " of " + std::to_string(total_nodes));
 
-    // The exact -INFINITY branch, tested directly: inject S = 0.
-    DeviceArray<real> zeroS;
-    zeroS.alloc(B); zeroS.zero();
-    envelope_logp(ds.x_sh.d, ds.s.d, ds.t.d, zeroS.d, ds.params.d, ds.P, ds.logp.d, B);
+    // The exact -INFINITY branch, tested directly: zero rho, so S = sum_k rho_k det_k = 0.
+    DeviceArray<real> zeroRho;
+    zeroRho.alloc((std::size_t)B * K); zeroRho.zero();
+    combine_envelope(zeroRho.d, ds.dets.d, ds.S.d, ds.x_sh.d, ds.s.d, ds.t.d, ds.params.d, ds.P, ds.logp.d, B);
     std::vector<real> g2(B); ds.logp.down(g2.data(), B);
     int not_inf = 0;
     for (int w = 0; w < B; w++)

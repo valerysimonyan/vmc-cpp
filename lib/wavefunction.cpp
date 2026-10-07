@@ -174,25 +174,22 @@ static T psi_impl(const double* x, const double* s, const double* t, const Ansat
                 det = lu_det<double>(buf.M_scratch, N, ws.piv);
             }
         }
-        if constexpr (!is_jet) ws.dets[i] = det;
-        sum = sum + buf.rho[i] * det;
+         if constexpr (is_jet) sum = sum + buf.rho[i] * det;
+        else ws.dets[i] = det;
     }
-    
-    // Envelope
-    T r2{};
-    for (int i = 0; i < D; i++) r2 = r2 + coord(i) * coord(i);
-    double xs[D];
-    for (int i = 0; i < D; i++) { 
-        if constexpr (is_jet) xs[i] = coord(i).v; 
-        else xs[i] = coord(i); 
-    }
-    if constexpr (is_jet) {
+
+    // psi = envelope * exp(J) * S, 
+    if constexpr (!is_jet) {
+        const double S = S_sum(buf.rho.data(), ws.dets.data());
+        return exp(envelope::log_env_J(a.alpha, a.jc.data(), ws.x_sh.data(), s, t)) * S;
+    } else {
+        Jet r2{};
+        for (int i = 0; i < D; i++) r2 = r2 + coord(i) * coord(i);
+        double xs[D];
+        for (int i = 0; i < D; i++) xs[i] = coord(i).v;
         Jet Jj;
         Jj.v = envelope::jastrow<double, double>(xs, s, t, a.jc.data(), Jj.g.data(), &Jj.l);
         return exp(envelope::log_factor(a.alpha, envelope::radius(r2)) + Jj) * sum;
-    } else {
-        const double Jv = envelope::jastrow<double, double>(xs, s, t, a.jc.data(), nullptr, nullptr);
-        return exp(envelope::log_factor(a.alpha, envelope::radius(r2)) + Jv) * sum;
     }
 }
 

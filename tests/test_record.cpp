@@ -39,7 +39,7 @@ static double legacy_local_E(const std::vector<double>& x, const std::vector<dou
     if (!std::isfinite(pj.v) || std::fabs(pj.v) < 1e-290 || mismatch) { std::fill(O_out.begin(), O_out.end(), 0.0); return 0.0; }
 
     ws.l2_val = l2_local(ws.x_sh.data(), pj.g.data(), pj.v);
-    double E_loc = -hbar2_2m * (pj.l/pj.v);
+    double E_loc = -hbar2_2m * pj.l / pj.v;
     if (!std::isfinite(E_loc)) { std::fill(O_out.begin(), O_out.end(), 0.0); return 0.0; }
 
     if (nuc_3N) {

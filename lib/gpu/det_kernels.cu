@@ -101,9 +101,7 @@ void batched_det(cublasHandle_t handle, int n_mats, real* M_batch, double** lu_p
 __global__ void S_combine_kernel(const real* __restrict__ rho, const real* __restrict__ dets, real* __restrict__ S, int B) {
     int w = blockIdx.x * blockDim.x + threadIdx.x;
     if (w >= B) return;
-    real acc = (real)0;
-    for (int k = 0; k < K; k++) acc += rho[(std::size_t)w*K + k] * dets[(std::size_t)w*K + k];
-    S[w] = acc;
+    S[w] = S_sum(rho + (std::size_t)w*K, dets + (std::size_t)w*K);
 }
 
 void S_combine(const real* rho_out, const real* dets, real* S, int B, cudaStream_t stream) {
@@ -113,46 +111,14 @@ void S_combine(const real* rho_out, const real* dets, real* S, int B, cudaStream
     cuda_sync_check("S_combine");
 }
 
-// Also GPU_ize envelope evaluation
-__global__ void envelope_logp_kernel(const real* __restrict__ x_sh, const real* __restrict__ s, const real* __restrict__ t, const real* __restrict__ S, const real* __restrict__ alpha_d, real* __restrict__ logp, int B) {
-    int w = blockIdx.x * blockDim.x + threadIdx.x;
-    if (w >= B) return;
-    const real alpha = *alpha_d;
-
-    const real r_env = envelope::radius(envelope::r2(x_sh + (std::size_t)w * D));
-
-    const real Sv = S[w];
-    if (!(Sv != (real)0) || !isfinite(Sv)) {   // catches 0, -0 and NaN
-        logp[w] = -INFINITY;
-        return;
-    }
-    logp[w] = envelope::log_factor(alpha, r_env) + envelope::jastrow<real, real>(x_sh + (std::size_t)w * D, s + (std::size_t)w * N, t + (std::size_t)w * N, alpha_d + 1, nullptr, nullptr) + log(fabs(Sv));
-}
-
-void envelope_logp(const real* x_sh, const real* s, const real* t, const real* S, const real* params, std::size_t P, real* logp, int B, cudaStream_t stream) {
-    if (B <= 0) return;
-    const int threads = 256;
-    envelope_logp_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(x_sh, s, t, S, params + (P - envelope::n_params_env), logp, B);
-    cuda_sync_check("envelope_logp");
-}
-
+// Evaluate log|Ψ| = log|S| + log|env| + log|J|
 __global__ void combine_envelope_kernel(const real* __restrict__ rho, const real* __restrict__ dets, real* __restrict__ S, const real* __restrict__ x_sh, const real* __restrict__ s, const real* __restrict__ t,const real* __restrict__ alpha_d, real* __restrict__ logp, int B) {
     int w = blockIdx.x * blockDim.x + threadIdx.x;
     if (w >= B) return;
 
-    real acc = (real)0;
-    for (int k = 0; k < K; k++) acc += rho[(std::size_t)w*K + k] * dets[(std::size_t)w*K + k];
-    S[w] = acc;
-
-    const real alpha = *alpha_d;
-    const real r_env = envelope::radius(envelope::r2(x_sh + (std::size_t)w * D));
-
-    const real Sv = acc;
-    if (!(Sv != (real)0) || !isfinite(Sv)) {
-        logp[w] = -INFINITY;
-        return;
-    }
-    logp[w] = envelope::log_factor(alpha, r_env) + envelope::jastrow<real, real>(x_sh + (std::size_t)w * D, s + (std::size_t)w * N, t + (std::size_t)w * N, alpha_d + 1, nullptr, nullptr) + log(fabs(Sv));
+    const real Sw = S_sum(rho + (std::size_t)w*K, dets + (std::size_t)w*K);
+    S[w] = Sw;
+    logp[w] = log_psi(*alpha_d, alpha_d + 1, x_sh + (std::size_t)w * D, s + (std::size_t)w * N, t + (std::size_t)w * N, Sw);
 }
 
 void combine_envelope(const real* rho_out, const real* dets, real* S, const real* x_sh, const real* s, const real* t, const real* params, std::size_t P, real* logp, int B, cudaStream_t stream) {

@@ -98,8 +98,8 @@ static void test_fusions(const Ansatz& a, cublasHandle_t h) {
     std::printf("  shift_feat_combo vs shift_to_com+build_feat_combo: %zu of %zu values differ\n", d1b, nx + nfc);
     CHECK(d1b == 0, "fused combo feat is not bitwise the unfused pair");
 
-    // 2. The eval tail: S_combine + envelope_logp vs combine_envelope, on
-    // identical dets. Round 1 is the natural batch; round 2 marks every matrix
+    // 2. The eval tail: combine_envelope's S vs S_combine, on identical dets
+    // (both call envelope::S_sum). Round 1 is the natural batch; round 2 marks every matrix
     // of every fourth walker singular through lu_info -- exactly what getrf
     // reports for an exact zero pivot -- so the S == 0 / logp == -inf branch is
     // compared too. (Coincident particles do not reach it: elimination leaves
@@ -115,17 +115,16 @@ static void test_fusions(const Ansatz& a, cublasHandle_t h) {
         }
         dets_from_lu(ds.M_batch.d, ds.lu_piv.d, ds.lu_info.d, ds.dets.d, B*K);
         S_combine(ds.rho_out.d, ds.dets.d, ds.S.d, B);
-        envelope_logp(ds.x_sh.d, ds.s.d, ds.t.d, ds.S.d, ds.params.d, ds.P, ds.logp.d, B);
-        auto S0 = dl(ds.S, B); auto lp0 = dl(ds.logp, B);
+        auto S0 = dl(ds.S, B);
         ds.S.zero(); ds.logp.zero();
         combine_envelope(ds.rho_out.d, ds.dets.d, ds.S.d, ds.x_sh.d, ds.s.d, ds.t.d, ds.params.d, ds.P, ds.logp.d, B);
         auto S1 = dl(ds.S, B); auto lp1 = dl(ds.logp, B);
         std::size_t n_ninf = 0;
-        for (real v : lp0) if (v == -INFINITY) n_ninf++;
-        const std::size_t d2 = bitdiff(S0, S1) + bitdiff(lp0, lp1);
-        std::printf("  combine_envelope (%s) vs S_combine+envelope_logp: %zu of %d values differ  (%zu -inf logp)\n",
-                    round ? "forced singular" : "natural", d2, 2*B, n_ninf);
-        CHECK(d2 == 0, "fused combine+envelope is not bitwise the two kernels");
+        for (real v : lp1) if (v == -INFINITY) n_ninf++;
+        const std::size_t d2 = bitdiff(S0, S1);
+        std::printf("  combine_envelope S (%s) vs S_combine: %zu of %d values differ  (%zu -inf logp)\n",
+                    round ? "forced singular" : "natural", d2, B, n_ninf);
+        CHECK(d2 == 0, "combine_envelope's S is not bitwise S_combine's");
         if (round == 1) CHECK(n_ninf == (std::size_t)B/4, "forced-singular walkers did not reach the -inf branch");
     }
 }

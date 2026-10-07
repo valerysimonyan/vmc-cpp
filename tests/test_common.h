@@ -50,3 +50,6 @@ inline double V_3N(const dvec& x) {
 inline double V_coulomb(const dvec& x, const dvec& t) { 
     return V_coulomb(x.data(), t.data()); 
 }
+inline double l2_local(const double* x_sh, const double* grad, double psi_val) {
+    return l2_local(x_sh, grad, 1, psi_val);
+}

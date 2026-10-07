@@ -2,6 +2,7 @@
 #include "djet.h"
 
 #include "../envelope.h"
+#include "../hamiltonian.h"
 
 #include <cmath>
 
@@ -83,7 +84,7 @@ void psi_jet_compose(const real* J_rho, const real* J_det, const real* x_sh, con
     cuda_sync_check("psi_jet_compose");
 }
 
-// Compose Angular Momentum square and Laplacian
+// Compose Angular Momentum square and Laplacian acrpss walkers
 __global__ void kinetic_l2_kernel(const real* __restrict__ J_psi, const real* __restrict__ x_sh, real* __restrict__ E_kin, real* __restrict__ l2, int Bc, int w_off, int B_tot) {
     const int w = blockIdx.x * blockDim.x + threadIdx.x;
     if (w >= Bc) return;
@@ -93,21 +94,8 @@ __global__ void kinetic_l2_kernel(const real* __restrict__ J_psi, const real* __
     const real v = J_psi[gw];
     const real l = J_psi[(std::size_t)(jet_C - 1)*p_stride + gw];
 
-    E_kin[gw] = -(real)hbar2_2m * (l / v);
-
-    // l2_local (physics.cpp): L = sum_i r_i x grad_i, then |L|^2 / psi^2.
-    const real* xw = x_sh + gw * D;
-    real Lx = (real)0, Ly = (real)0, Lz = (real)0;
-    for (int i = 0; i < N; i++) {
-        const real rx = xw[i*dim + 0], ry = xw[i*dim + 1], rz = xw[i*dim + 2];
-        const real gx = J_psi[(std::size_t)(1 + i*dim + 0)*p_stride + gw];
-        const real gy = J_psi[(std::size_t)(1 + i*dim + 1)*p_stride + gw];
-        const real gz = J_psi[(std::size_t)(1 + i*dim + 2)*p_stride + gw];
-        Lx += ry*gz - rz*gy;
-        Ly += rz*gx - rx*gz;
-        Lz += rx*gy - ry*gx;
-    }
-    l2[gw] = (Lx*Lx + Ly*Ly + Lz*Lz) / (v*v);
+    E_kin[gw] = kinetic(l, v);
+    l2[gw] = l2_local(x_sh + gw * D, J_psi + p_stride + gw, p_stride, v);
 }
 
 void kinetic_l2(const real* J_psi, const real* x_sh, real* E_kin, real* l2, int Bc, int w_off, int B_tot, cudaStream_t stream) {
@@ -124,29 +112,7 @@ __global__ void v3n_kernel(const real* __restrict__ x, real* __restrict__ v3n, i
     if (w >= Bc) return;
 
     const std::size_t gw = (std::size_t)(w_off + w);
-    if (N < 3) { v3n[gw] = (real)0; return; }
-
-    const real* xw = x + gw * D;
-    real V = (real)0;
-    for (int i = 0; i < N; i++) {   
-        for (int j = i+1; j < N; j++) {
-            for (int k = j+1; k < N; k++) {
-                real rij2 = (real)0, rjk2 = (real)0, rki2 = (real)0;
-                for (int d = 0; d < dim; d++) {
-                    const real dij = xw[i*dim + d] - xw[j*dim + d];
-                    const real djk = xw[j*dim + d] - xw[k*dim + d];
-                    const real dki = xw[k*dim + d] - xw[i*dim + d];
-                    rij2 += dij * dij;
-                    rjk2 += djk * djk;
-                    rki2 += dki * dki;
-                }
-                V += exp(-(rki2+rij2)/(real)(R3*R3));
-                V += exp(-(rij2+rjk2)/(real)(R3*R3));
-                V += exp(-(rjk2+rki2)/(real)(R3*R3));
-            }
-        }
-    }
-    v3n[gw] = (real)V3_0 * V;
+    v3n[gw] = V_3N(x + gw * D);
 }
 
 void v3n_batch(const real* x, real* v3n, int Bc, int w_off, cudaStream_t stream) {
@@ -163,19 +129,27 @@ __global__ void validity_jet_kernel(const real* __restrict__ J_psi, const real* 
 
     const std::size_t gw = (std::size_t)(w_off + w);
     const real Sv = S[gw];
+    if (!isfinite(Sv) || fabs(Sv) < (real)psi_floor) { 
+        valid[gw] = 0; 
+        return; 
+    }
 
-    // psi_double = psi_impl<double>'s last line: exp(-(beta_min+exp(alpha))*r_env) * S
-    const real r_env = envelope::radius(envelope::r2(x_sh + gw * D));
-    const real pd = exp(envelope::log_factor(alpha, r_env) + envelope::jastrow<real, real>(x_sh + gw * D, s + gw * N, t + gw * N, jc, nullptr, nullptr)) * Sv;
+    // Assemble the wave function and check if it is valid
+    const real pd = exp(envelope::log_env_J(alpha, jc, x_sh + gw * D, s + gw * N, t + gw * N)) * Sv;
     psi_dbl[gw] = pd;
-
-    if (!isfinite(Sv) || fabs(Sv) < (real)psi_floor) { valid[gw] = 0; return; }
-
+    
     const real v = J_psi[gw];
+    
     const bool mismatch = fabs(v - pd) > (real)psi_mismatch_tol * fmax((real)1, fabs(pd)); // Set precision tolerance depending on precision chosen
-    if (!isfinite(v) || fabs(v) < (real)psi_floor || mismatch) { valid[gw] = 0; return; }
-
-    if (!isfinite(E_kin[gw])) { valid[gw] = 0; return; }
+    if (!isfinite(v) || fabs(v) < (real)psi_floor || mismatch) { 
+        valid[gw] = 0;
+        return; 
+    }
+    
+    if (!isfinite(E_kin[gw])) { 
+        valid[gw] = 0; 
+        return; 
+    }
 
     valid[gw] = 1;
 }

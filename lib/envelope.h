@@ -234,5 +234,10 @@ VMC_HD inline void jastrow_O(const T* x, const L* s, const L* t, T* feat) {
 }
 
 
+// Evaluate log|Ψ| = log|a r_ij| + log|J|
+template <typename T, typename L>
+VMC_HD inline T log_env_J(T alpha, const T* jc, const T* x_sh, const L* s, const L* t) {
+    return log_factor(alpha, radius(r2(x_sh))) + jastrow<T, L>(x_sh, s, t, jc, nullptr, nullptr);
+}
 
 }
