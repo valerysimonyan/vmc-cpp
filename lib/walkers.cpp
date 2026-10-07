@@ -179,7 +179,7 @@ void sweep_one(WalkerBatch& wb, int w, const Ansatz& a, double step, Workspace& 
                     double s0[N]; 
                     for (int q = 0; q < N; q++) s0[q] = sw[q];
                     std::swap(s0[iu], s0[id]);
-                    logp_new += envelope::jastrow_dlabel<double, double>(xw, s0, tw, sw, tw, a.jc.data());
+                    logp_new += jastrow_dlabel<double, double>(xw, s0, tw, sw, tw, a.jc.data());
                 }
 
                 if (wb_metro_accept(wb, w, logp, logp_new)) {
@@ -208,7 +208,7 @@ void sweep_one(WalkerBatch& wb, int w, const Ansatz& a, double step, Workspace& 
                     double t0[N]; 
                     for (int q = 0; q < N; q++) t0[q] = tw[q];
                     std::swap(t0[ip], t0[in]);
-                    logp_new += envelope::jastrow_dlabel<double, double>(xw, sw, t0, sw, tw, a.jc.data());
+                    logp_new += jastrow_dlabel<double, double>(xw, sw, t0, sw, tw, a.jc.data());
                 }
 
                 if (wb_metro_accept(wb, w, logp, logp_new)) {

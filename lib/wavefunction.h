@@ -60,7 +60,7 @@ template <typename T, typename L>
 VMC_HD inline T log_psi(T alpha, const T* jc, const T* x_sh, const L* s, const L* t, T S) {
     using std::isfinite; using std::log; using std::fabs;
     if (!(S != T(0)) || !isfinite(S)) return T(-INFINITY);
-    return envelope::log_env_J(alpha, jc, x_sh, s, t) + log(fabs(S));
+    return log_env_J(alpha, jc, x_sh, s, t) + log(fabs(S));
 }
 
 struct Ansatz {

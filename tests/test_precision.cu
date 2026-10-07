@@ -92,8 +92,8 @@ static void storage_checks(DeviceState& ds, cublasHandle_t h, const Ansatz& a, W
         O32[q] = (double)pool_f[q];
         if (!vv[i]) { O64[q] = 0.0; continue; }
         // alpha column: computed in o_finalize, not staged; take the stored value.
-        O64[q] = (k < P - envelope::n_params_env) ? stage[q] / Sv[i] : O32[q];
-        if (k < P - envelope::n_params_env && O64[q] != 0.0) { worst_rt = std::max(worst_rt, std::fabs(O32[q] - O64[q]) / std::fabs(O64[q])); n_rt++; }
+        O64[q] = (k < P - n_params_env) ? stage[q] / Sv[i] : O32[q];
+        if (k < P - n_params_env && O64[q] != 0.0) { worst_rt = std::max(worst_rt, std::fabs(O32[q] - O64[q]) / std::fabs(O64[q])); n_rt++; }
     }
     std::printf("  fp32_opool round trip: %zu entries, worst relative %.2e (2^-24 = 5.96e-08)\n", n_rt, worst_rt);
     CHECK(n_rt > 0 && worst_rt <= 1e-7, "float O_pool entries differ from the FP64 rows beyond one rounding");

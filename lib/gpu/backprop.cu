@@ -179,14 +179,14 @@ __global__ void o_finalize_kernel(const double* __restrict__ src, opool_t* __res
         return;
     }
     const real Sw = S[w];
-    const std::size_t P_net = P - envelope::n_params_env;
+    const std::size_t P_net = P - n_params_env;
     for (std::size_t k = threadIdx.x; k < P_net; k += blockDim.x) row[k] = (opool_t)(in[k] / Sw);
 
     if (threadIdx.x == 0) {
-        const real r_env = envelope::radius(envelope::r2(x_sh + w * D));
-        row[P_net] = (opool_t)envelope::O_alpha(alpha, r_env);
+        const real r_env = env_radius(env_r2(x_sh + w * D));
+        row[P_net] = (opool_t)O_alpha(alpha, r_env);
         real feat[n_jas_par + 1];
-        envelope::jastrow_O<real, real>(x_sh + w * D, s + w * N, t + w * N, feat);
+        jastrow_O<real, real>(x_sh + w * D, s + w * N, t + w * N, feat);
         for (int m = 0; m < n_jas_par; m++) row[P_net + 1 + m] = (opool_t)feat[m];
     }
 }
@@ -211,7 +211,7 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
     real alpha;
     {
         VMC_PROF_HOST("/transfers/alpha_dn");
-        CUDA_CHECK(cudaMemcpyAsync(&alpha, ds.params.d + (P - envelope::n_params_env), sizeof(real), cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaMemcpyAsync(&alpha, ds.params.d + (P - n_params_env), sizeof(real), cudaMemcpyDeviceToHost, stream));
         xfer_note_dn(sizeof(real));
         CUDA_CHECK(cudaStreamSynchronize(stream));
     }

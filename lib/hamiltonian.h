@@ -89,15 +89,15 @@ VMC_HD inline void jastrow_exchange(const T* x, const L* s, const L* t, int i, i
     // Spin exchange
     s1[i] = s[j]; 
     s1[j] = s[i];                                    
-    const T dS = envelope::jastrow_dlabel<T, L>(x, s, t, s1, t, jc);
+    const T dS = jastrow_dlabel<T, L>(x, s, t, s1, t, jc);
 
     // Isospin exchange
     t1[i] = t[j]; 
     t1[j] = t[i];                                               
-    const T dT = envelope::jastrow_dlabel<T, L>(x, s, t, s, t1, jc);          
+    const T dT = jastrow_dlabel<T, L>(x, s, t, s, t1, jc);          
 
     // Both spin and isospin exchange
-    const T dST = envelope::jastrow_dlabel<T, L>(x, s, t, s1, t1, jc);
+    const T dST = jastrow_dlabel<T, L>(x, s, t, s1, t1, jc);
 
     // Evalute the ratio of the Jastrow factors for the exchanges
     R_s *= exp(dS); 

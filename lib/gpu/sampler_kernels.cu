@@ -133,8 +133,8 @@ __global__ void accept_discrete_kernel(real* __restrict__ cur, const real* __res
     if (n_jas_cls > 1 && isfinite(lo)) {  
         const real* cw = cur + (std::size_t)w * N; const real* pw = prop + (std::size_t)w * N; const real* ow = other + (std::size_t)w * N;
         const real* xw = x + (std::size_t)w * D;
-        ln += (double)(is_spin ? envelope::jastrow_dlabel<real, real>(xw, cw, ow, pw, ow, jc)
-                               : envelope::jastrow_dlabel<real, real>(xw, ow, cw, ow, pw, jc));
+        ln += (double)(is_spin ? jastrow_dlabel<real, real>(xw, cw, ow, pw, ow, jc)
+                               : jastrow_dlabel<real, real>(xw, ow, cw, ow, pw, jc));
     }
 
 
@@ -155,7 +155,7 @@ __global__ void accept_discrete_kernel(real* __restrict__ cur, const real* __res
 void accept_discrete(DeviceState& ds, int B, bool is_spin, cudaStream_t stream) {
     if (B <= 0) return;
     const int threads = 256;
-    accept_discrete_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(is_spin ? ds.s.d : ds.t.d, is_spin ? ds.s_prop.d : ds.t_prop.d, is_spin ? ds.t.d : ds.s.d, is_spin, ds.x.d, ds.params.d + (ds.P - envelope::n_params_env) + 1, ds.S_cur.d, ds.S_prop.d, ds.logp.d, is_spin ? ds.sp_acc.d : ds.tau_acc.d, ds.rng_ctr.d, vmc_seed(), B);
+    accept_discrete_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(is_spin ? ds.s.d : ds.t.d, is_spin ? ds.s_prop.d : ds.t_prop.d, is_spin ? ds.t.d : ds.s.d, is_spin, ds.x.d, ds.params.d + (ds.P - n_params_env) + 1, ds.S_cur.d, ds.S_prop.d, ds.logp.d, is_spin ? ds.sp_acc.d : ds.tau_acc.d, ds.rng_ctr.d, vmc_seed(), B);
     cuda_sync_check("accept_discrete");
 }
 

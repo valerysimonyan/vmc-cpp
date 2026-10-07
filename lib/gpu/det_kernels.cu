@@ -121,7 +121,7 @@ __global__ void combine_envelope_kernel(const real* __restrict__ rho, const real
 void combine_envelope(const real* rho_out, const real* dets, real* S, const real* x_sh, const real* s, const real* t, const real* params, std::size_t P, real* logp, int B, cudaStream_t stream) {
     if (B <= 0) return;
     const int threads = 256;
-    combine_envelope_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(rho_out, dets, S, x_sh, s, t, params + (P - envelope::n_params_env), logp, B);
+    combine_envelope_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(rho_out, dets, S, x_sh, s, t, params + (P - n_params_env), logp, B);
     cuda_sync_check("combine_envelope");
 }
 

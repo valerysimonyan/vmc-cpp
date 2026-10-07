@@ -264,7 +264,7 @@ DescentResult descent(Ansatz& a) {
 
     // Store ADAM update vectors
     std::vector<double> m(n_params, 0.), v(n_params, 0.);
-    std::vector<double> env_m(envelope::n_params_env, 0.), env_v(envelope::n_params_env, 0.);  // Adam moments of the envelope block
+    std::vector<double> env_m(n_params_env, 0.), env_v(n_params_env, 0.);  // Adam moments of the envelope block
 
     // Initialize SR matrix and initial trial vector
     std::vector<double> delta(n_params, 0.0);
@@ -423,12 +423,12 @@ DescentResult descent(Ansatz& a) {
             // the logged norms are the device-computed ones.
             log = SR_step_device(ds, cublas, a, i - N_gd, n_samples, bs.n_valid, delta, &n_scalar_dl);
             if (env_adam_lr > 0.0) {   // own Adam step for the envelope block (alpha, Jastrow)
-                const std::size_t e0 = n_params - envelope::n_params_env;
-                double ge[envelope::n_params_env];
+                const std::size_t e0 = n_params - n_params_env;
+                double ge[n_params_env];
                 CUDA_CHECK(cudaMemcpy(ge, ds.grad_d.d + e0, sizeof(ge), cudaMemcpyDeviceToHost));
                 const int t = i - N_gd + 1;
                 const double lr_t = env_adam_lr / (1.0 + (double)(t - 1) / env_adam_decay_it);
-                for (int q = env_adam_alpha ? 0 : 1; q < envelope::n_params_env; q++) {
+                for (int q = env_adam_alpha ? 0 : 1; q < n_params_env; q++) {
                     env_m[q] = beta1 * env_m[q] + (1.0 - beta1) * ge[q];
                     env_v[q] = beta2 * env_v[q] + (1.0 - beta2) * ge[q] * ge[q];
                     const double mh = env_m[q] / (1.0 - std::pow(beta1, t)), vh = env_v[q] / (1.0 - std::pow(beta2, t));
@@ -458,7 +458,7 @@ DescentResult descent(Ansatz& a) {
         double metro_ms = std::chrono::duration<double, std::milli>(tB - tA).count();
         double local_E_ms = (local_E_dev_ms >= 0.0) ? local_E_dev_ms : std::chrono::duration<double, std::milli>(tC - tB).count();
 
-        std::size_t alpha_idx = n_params - envelope::n_params_env;
+        std::size_t alpha_idx = n_params - n_params_env;
         double grad_alpha = grad[alpha_idx];
         long long bytes_up = 0, bytes_dn = 0;
 #ifdef VMC_CUDA

@@ -99,7 +99,7 @@ static void test_fusions(const Ansatz& a, cublasHandle_t h) {
     CHECK(d1b == 0, "fused combo feat is not bitwise the unfused pair");
 
     // 2. The eval tail: combine_envelope's S vs S_combine, on identical dets
-    // (both call envelope::S_sum). Round 1 is the natural batch; round 2 marks every matrix
+    // (both call S_sum). Round 1 is the natural batch; round 2 marks every matrix
     // of every fourth walker singular through lu_info -- exactly what getrf
     // reports for an exact zero pivot -- so the S == 0 / logp == -inf branch is
     // compared too. (Coincident particles do not reach it: elimination leaves

@@ -6,21 +6,19 @@
 #include <cmath>
 #include <type_traits>
 
-namespace envelope {
-
 // if T is number set to true, if true set type to T otherwise a double
 template <typename T>
 using scalar_t = std::conditional_t<std::is_arithmetic<T>::value, T, double>;
 
 // Take cusp regulator and square it
 template <typename T>
-VMC_HD inline scalar_t<T> eps2() { 
+VMC_HD inline scalar_t<T> env_eps2() { 
     return scalar_t<T>(eps_env * eps_env); 
 }
 
 // Return position squared as template typename T 
 template <typename T>
-VMC_HD inline T r2(const T* x) {
+VMC_HD inline T env_r2(const T* x) {
     T s = T(0);
     for (int i = 0; i < D; i++) s = s + x[i] * x[i];
     return s;
@@ -28,14 +26,14 @@ VMC_HD inline T r2(const T* x) {
 
 // r_env = sqrt(r^2 + eps_env^2).
 template <typename T>
-VMC_HD inline T radius(const T& r2) {
+VMC_HD inline T env_radius(const T& r2) {
     using std::sqrt;
-    return sqrt(r2 + eps2<T>());
+    return sqrt(r2 + env_eps2<T>());
 }
 
 // Envelope floor
 template <typename A>
-VMC_HD inline A rate(A alpha) {
+VMC_HD inline A env_rate(A alpha) {
     using std::exp;
     return A(beta_min) + exp(alpha);
 }
@@ -237,7 +235,6 @@ VMC_HD inline void jastrow_O(const T* x, const L* s, const L* t, T* feat) {
 // Evaluate log|Ψ| = log|a r_ij| + log|J|
 template <typename T, typename L>
 VMC_HD inline T log_env_J(T alpha, const T* jc, const T* x_sh, const L* s, const L* t) {
-    return log_factor(alpha, radius(r2(x_sh))) + jastrow<T, L>(x_sh, s, t, jc, nullptr, nullptr);
+    return log_factor(alpha, env_radius(env_r2(x_sh))) + jastrow<T, L>(x_sh, s, t, jc, nullptr, nullptr);
 }
 
-}

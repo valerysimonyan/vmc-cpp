@@ -233,10 +233,10 @@ static void cpu_O_with_device_inputs(const Ansatz& a, Workspace& ws, const real*
 
     double r2 = 0.0;
     for (int i = 0; i < D; i++) { double c = ws.x_sh[i]; r2 += c * c; }
-    const std::size_t PA = P - envelope::n_params_env;
+    const std::size_t PA = P - n_params_env;
     O[PA] = -std::exp(a.alpha) * std::sqrt(r2 + eps_env * eps_env);
     double feat[n_jas_par + 1];
-    envelope::jastrow_O<double, double>(ws.x_sh.data(), sl, tl, feat);
+    jastrow_O<double, double>(ws.x_sh.data(), sl, tl, feat);
     for (int m = 0; m < n_jas_par; m++) O[PA + 1 + m] = feat[m];
 
     const double aS = std::fabs(S);
@@ -315,7 +315,7 @@ static void test_full_O(const Ansatz& a, cublasHandle_t h) {
             if (near && std::fabs(Os[k]) > 1e-14) worst_entry_near = std::max(worst_entry_near, ds_ / std::fabs(Os[k]));
             if (!(ds_ <= tol::fo(1e-12, 2e-7) * scale)) {   // float pool: one rounding per entry (6.3)
                 fail_same++;
-                if (k >= P - envelope::n_params_env) fs_alpha++; else if (k < n_h) fs_h++; else if (k < n_h + n_rho) fs_rho++; else fs_orb++;
+                if (k >= P - n_params_env) fs_alpha++; else if (k < n_h) fs_h++; else if (k < n_h + n_rho) fs_rho++; else fs_orb++;
             }
             // (b)
             const double de = std::fabs(got - Oc[k]);

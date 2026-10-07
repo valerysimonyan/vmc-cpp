@@ -52,7 +52,7 @@ static Jet legacy_jet_compose(const Ansatz& a, Workspace& ws, const std::vector<
     double xs[D];
     for (int i = 0; i < D; i++) xs[i] = ws.jin_sh[i].v;
     Jet Jj{};
-    Jj.v = envelope::jastrow<double, double>(xs, s.data(), t.data(), a.jc.data(), Jj.g.data(), &Jj.l);
+    Jj.v = jastrow<double, double>(xs, s.data(), t.data(), a.jc.data(), Jj.g.data(), &Jj.l);
     return exp(-(Jet(beta_min) + std::exp(a.alpha)) * r_env + Jj) * sum;
 }
 

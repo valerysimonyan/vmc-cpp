@@ -79,10 +79,10 @@ static double legacy_local_E(const std::vector<double>& x, const std::vector<dou
                     double s1[N], t1[N];
                     for (int q = 0; q < N; q++) { s1[q] = s[q]; t1[q] = t[q]; }
                     s1[i] = s[j]; s1[j] = s[i];
-                    const double dS = envelope::jastrow_dlabel<double, double>(x.data(), s.data(), t.data(), s1, t.data(), a.jc.data());
+                    const double dS = jastrow_dlabel<double, double>(x.data(), s.data(), t.data(), s1, t.data(), a.jc.data());
                     t1[i] = t[j]; t1[j] = t[i];
-                    const double dST = envelope::jastrow_dlabel<double, double>(x.data(), s.data(), t.data(), s1, t1, a.jc.data());
-                    const double dT = envelope::jastrow_dlabel<double, double>(x.data(), s.data(), t.data(), s.data(), t1, a.jc.data());
+                    const double dST = jastrow_dlabel<double, double>(x.data(), s.data(), t.data(), s1, t1, a.jc.data());
+                    const double dT = jastrow_dlabel<double, double>(x.data(), s.data(), t.data(), s.data(), t1, a.jc.data());
                     R_s *= std::exp(dS); R_t *= std::exp(dT); R_st *= std::exp(dST);
                 }
                 V_nuc += (hbarc/4.0)*(C01*v01*(1.0+R_t-R_s-R_st) + C10*v10*(1.0-R_t+R_s-R_st));
@@ -110,7 +110,7 @@ static double legacy_local_E(const std::vector<double>& x, const std::vector<dou
     double r2 = 0.0;
     for (int i = 0; i < D; i++) { double c = ws.x_sh[i]; r2 += c*c; }
     O_out[n_h+n_rho+n_orb] = -std::exp(a.alpha) * std::sqrt(r2 + eps_env*eps_env);
-    { double feat[n_jas_par + 1]; envelope::jastrow_O<double, double>(ws.x_sh.data(), s.data(), t.data(), feat); for (int m = 0; m < n_jas_par; m++) O_out[n_h+n_rho+n_orb+1+m] = feat[m]; }
+    { double feat[n_jas_par + 1]; jastrow_O<double, double>(ws.x_sh.data(), s.data(), t.data(), feat); for (int m = 0; m < n_jas_par; m++) O_out[n_h+n_rho+n_orb+1+m] = feat[m]; }
     return E_loc;
 }
 

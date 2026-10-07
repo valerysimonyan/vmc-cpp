@@ -139,14 +139,14 @@ static T psi_impl(const double* x, const double* s, const double* t, const Ansat
 
     // Combine with envelope and jastrow, depending on type
     if constexpr (!is_jet) {
-        return exp(envelope::log_env_J(a.alpha, a.jc.data(), x_sh, s, t)) * S;
+        return exp(log_env_J(a.alpha, a.jc.data(), x_sh, s, t)) * S;
     } else {
-        const Jet r2 = envelope::r2(x_sh);
+        const Jet r2 = env_r2(x_sh);
         double xs[D];
         for (int i = 0; i < D; i++) xs[i] = x_sh[i].v;
         Jet Jj;
-        Jj.v = envelope::jastrow<double, double>(xs, s, t, a.jc.data(), Jj.g.data(), &Jj.l);
-        return exp(envelope::log_factor(a.alpha, envelope::radius(r2)) + Jj) * S;
+        Jj.v = jastrow<double, double>(xs, s, t, a.jc.data(), Jj.g.data(), &Jj.l);
+        return exp(log_factor(a.alpha, env_radius(r2)) + Jj) * S;
     }
 }
 
@@ -295,11 +295,11 @@ void fill_O(const Ansatz& a, Workspace& ws, double S, std::vector<double>& O_out
     }
     for (std::size_t p = 0; p < n_orb; p++) O_out[n_h + n_rho + p] = ws.dtheta_orb[p]/S;
 
-    const double r_env = envelope::radius(envelope::r2(ws.x_sh.data()));
-    O_out[n_h+n_rho+n_orb] = envelope::O_alpha(a.alpha, r_env);
+    const double r_env = env_radius(env_r2(ws.x_sh.data()));
+    O_out[n_h+n_rho+n_orb] = O_alpha(a.alpha, r_env);
 
     double feat[n_jas_par + 1];
-    envelope::jastrow_O<double, double>(ws.x_sh.data(), s, t, feat);
+    jastrow_O<double, double>(ws.x_sh.data(), s, t, feat);
     for (int m = 0; m < n_jas_par; m++) O_out[n_h+n_rho+n_orb+1+m] = feat[m];
 }
 

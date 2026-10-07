@@ -229,7 +229,7 @@ __global__ void ex_assemble_kernel(const real* __restrict__ x, const real* __res
 void ex_assemble(const real* x, const real* s, const real* t, const real* S_swap, const real* S0, const real* E_kin, const real* v3n, const real* V_coul, const unsigned char* valid_jet, real* V_nuc, real* E_loc, unsigned char* valid_loc, int B, const real* params, std::size_t P, cudaStream_t stream) {
     if (B <= 0) return;
     const int threads = 128;
-    ex_assemble_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(x, s, t, S_swap, S0, E_kin, v3n, V_coul, valid_jet, V_nuc, E_loc, valid_loc, params + (P - envelope::n_params_env) + 1, B);
+    ex_assemble_kernel<<<(B + threads - 1)/threads, threads, 0, stream>>>(x, s, t, S_swap, S0, E_kin, v3n, V_coul, valid_jet, V_nuc, E_loc, valid_loc, params + (P - n_params_env) + 1, B);
     cuda_sync_check("ex_assemble");
 }
 
