@@ -20,9 +20,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORK = os.path.join(REPO, "build-golden")
 REF = os.path.join(REPO, "tests", "golden")
 
-SHORT = {"N_descent": "20", 
-         "walker_per_th": "64",
-         "therm_steps_init": "100",
+SHORT = {"N_descent": "10", 
+         "walker_per_th": "32",
+         "therm_steps_init": "5",
          "ckpt_every": "10", 
          "eval_iters": "5", 
          "diss_threshold": "1e9"

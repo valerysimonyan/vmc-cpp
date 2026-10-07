@@ -12,11 +12,6 @@ inline constexpr int ex_types  = 3;
 
 inline constexpr int ex_walkers = (int)(rows_max_phase3 / (std::size_t)(ex_types * ex_npairs));
 
-// Assign number for given S and T
-VMC_HD inline int ex_combo(real s, real t) {
-    return (s > (real)0 ? 0 : 1) + 2 * (t > (real)0 ? 0 : 1);
-}
-
 std::vector<int> ex_pair_table();
 
 void ex_plan(const real* s, const real* t, const int* pair_ij, unsigned char* active, int B, cudaStream_t stream = 0);

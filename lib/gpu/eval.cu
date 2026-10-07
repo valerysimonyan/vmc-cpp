@@ -60,9 +60,8 @@ __global__ void xi_reduce_combo_kernel(const real* __restrict__ tab_h, const rea
 
     real acc = (real)0;
     for (int p = 0; p < N; p++) {
-        const real sv = s[(std::size_t)w*N + p], tv = t[(std::size_t)w*N + p];
-        const int  c  = (sv > (real)0 ? 0 : 1) + 2 * (tv > (real)0 ? 0 : 1);
-        acc += tab_h[((std::size_t)(w*N + p)*4 + c) * m_feat + f];
+        const int c = st_combo(s[(std::size_t)w*N + p], t[(std::size_t)w*N + p]);
+        acc += tab_h[st_row((std::size_t)w*N + p, c) * m_feat + f];
     }
     xi[idx] = acc;    
 }

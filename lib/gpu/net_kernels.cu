@@ -1,4 +1,5 @@
 #include "net_kernels.h"
+#include "../wavefunction.h"
 
 #include <cmath>
 
@@ -30,11 +31,9 @@ void shift_to_com(const real* x, real* x_sh, int B, cudaStream_t stream) {
 __global__ void build_feat_kernel(const real* __restrict__ x_sh, const real* __restrict__ s, const real* __restrict__ t, real* __restrict__ feat_in, int B) {
     int r = blockIdx.x * blockDim.x + threadIdx.x;
     if (r >= B*N) return;
+
     int w = r/N, p = r % N; 
-    real* f = feat_in + (std::size_t)r * (dim + 2);
-    for (int d = 0; d < dim; d++) f[d] = x_sh[(std::size_t)w*D + p*dim + d];
-    f[dim] = s[(std::size_t)w*N + p];
-    f[dim + 1] = t[(std::size_t)w*N + p];
+    particle_input(x_sh + (std::size_t)w*D + p*dim, s[(std::size_t)w*N + p], t[(std::size_t)w*N + p], feat_in + (std::size_t)r * (dim + 2));
 }
 
 void build_feat(const real* x_sh, const real* s, const real* t, real* feat_in, int B, cudaStream_t stream) {
@@ -51,17 +50,15 @@ __global__ void shift_build_feat_kernel(const real* __restrict__ x, const real* 
     const int w = r / N, p = r % N;
     const real* xw = x + (std::size_t)w * D;
     real* ow = x_sh + (std::size_t)w * D;
-    real* f = feat_in + (std::size_t)r * (dim + 2);
+    real v[dim];   
     for (int d = 0; d < dim; d++) {
         real R = (real)0;
         for (int i = 0; i < N; i++) R += xw[i*dim + d];
         R /= (real)N;
-        const real v = xw[p*dim + d] - R;
-        ow[p*dim + d] = v;
-        f[d] = v;
+        v[d] = xw[p*dim + d] - R;
+        ow[p*dim + d] = v[d];
     }
-    f[dim] = s[(std::size_t)w*N + p];
-    f[dim + 1] = t[(std::size_t)w*N + p];
+    particle_input(v, s[(std::size_t)w*N + p], t[(std::size_t)w*N + p], feat_in + (std::size_t)r * (dim + 2));
 }
 
 void shift_build_feat(const real* x, const real* s, const real* t, real* x_sh, real* feat_in, int B, cudaStream_t stream) {

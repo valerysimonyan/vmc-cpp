@@ -156,12 +156,14 @@ __global__ void orb_seed_kernel(const real* __restrict__ rho, const real* __rest
     std::size_t idx = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
     const std::size_t width = (std::size_t)K * N;
     if (idx >= (std::size_t)Bc * N * width) return;
+    
     const std::size_t row = idx / width;
     const std::size_t w = row / N;
     const int i = (int)(row % N);
     const int col = (int)(idx % width);
     const int j = col / N, k = col % N;
-    seed[idx] = rho[w*K + j] * dets[w*K + j] * Minv[(w*K + j)*(N*N) + (std::size_t)i*N + k];
+
+    seed[idx] = rho[w*K + j] * dets[w*K + j] * Minv[slater_idx(w*K + j, i, k)];
 }
 
 // Fill O's

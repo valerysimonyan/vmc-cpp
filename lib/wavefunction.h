@@ -10,6 +10,43 @@
 #include "autodiff.h"
 #include "envelope.h"
 
+
+
+// Return index of orbital matrix for orbital j, particle i, determinant k
+VMC_HD inline std::size_t orb_idx(std::size_t i, int j) { 
+    return i*N + j; 
+}
+VMC_HD inline std::size_t slater_idx(std::size_t k, int i, int j) { 
+    return k*(N*N) + (std::size_t)i*N + j; 
+}
+
+// Return index of spin, isospin table
+template <typename L>
+VMC_HD inline int st_combo(L s, L t) {
+    return (s > L(0) ? 0 : 1) + 2 * (t > L(0) ? 0 : 1);
+}
+// Look at value of first and 2nd bits of c, return spin and isospin, inverse of above
+template <typename L>
+VMC_HD inline L st_spin(int c) { 
+    return (c & 1) ? L(-1) : L(1); 
+}
+template <typename L>
+VMC_HD inline L st_iso(int c)  { 
+    return (c & 2) ? L(-1) : L(1); 
+}
+// Row of the (s,t) table for particle row p (p = i on the CPU, w*N + i on the GPU) and combination c
+VMC_HD inline std::size_t st_row(std::size_t p, int c) {
+    return p*4 + c;
+}
+
+// Single particle input for particle i
+template<typename T, typename L>
+VMC_HD inline void particle_input(const T* x_i, L s_i, L t_i, T* in) {
+    for (int d = 0; d < dim; d++) in[d] = x_i[d];
+    in[dim] = T(s_i);
+    in[dim+1] = T(t_i);
+}
+
 // Compose FermiSets sum
 template <typename T>
 VMC_HD inline T S_sum(const T* rho, const T* dets) {
@@ -17,7 +54,6 @@ VMC_HD inline T S_sum(const T* rho, const T* dets) {
     for (int k = 0; k < K; k++) S += rho[k] * dets[k];
     return S;
 }
-
 
 // Evaluate log|Ψ| = log|envelope| + log|S|
 template <typename T, typename L>
@@ -90,11 +126,6 @@ struct Ansatz {
     }
 };
 
-// Return index of spin, isospin table
-inline int st_combo(double s, double t) {
-    return (s > 0 ? 0 : 1) + 2 * (t > 0 ? 0 : 1);
-}
-
 struct Workspace {
     std::vector<Jet> jin;             // Full jet encoded degrees of freedom
     std::vector<Jet> jin_sh;          // Same as above but in COM coordinates
@@ -160,6 +191,43 @@ struct Workspace {
 
     // Persample L^2
     double l2_val = 0.0;
+
+    Workspace() {
+        x_sh.resize(D);
+        dsingle.resize(dim + 2);
+        dxi.resize(m_feat);
+        drho.resize(K);
+        dM.resize((std::size_t)K*N*N);
+        dM_scratch.resize((std::size_t)N*N);
+        dets.resize(K);
+        dMinv.resize((std::size_t)K*N*N);
+        h_caches.resize(N);
+        orb_caches.resize(N);
+        seed_rho.resize(K);
+        seed_orb.resize((std::size_t)K*N);
+        s_swap.resize(N);
+        t_swap.resize(N);
+        tab_h.resize((std::size_t)N*4*m_feat);
+        tab_orb.resize((std::size_t)N*4*K*N);
+        tab_xi.resize(m_feat);
+        tab_rho.resize(K);
+        tab_M.resize((std::size_t)N*N);
+        sm_xi.resize(m_feat);
+        sm_rho.resize(K);
+        sm_dci.resize((std::size_t)K*N);
+        sm_dcj.resize((std::size_t)K*N);
+    }
+
+    // Larger so only allocate when needed
+    void ensure_jet_buffers() {
+        if (!jM.empty()) return;
+        jin.resize(D);
+        jin_sh.resize(D);
+        jsingle.resize(dim + 2);
+        jxi.resize(m_feat);
+        jrho.resize(K);
+        jM.resize((std::size_t)K*N*N);
+    }
 };
 
 

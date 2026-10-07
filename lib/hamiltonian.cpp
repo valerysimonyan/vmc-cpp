@@ -62,9 +62,6 @@ bool local_E(const double* x, const double* s, const double* t, const Ansatz& a,
         assert(std::fabs(S0 - S) < 1e-10 * std::max(1.0, std::fabs(S)));
 
         bool use_rank2 = rank2_well_conditioned(ws);
-
-        if (ws.s_swap.size() != (std::size_t)N) ws.s_swap.resize(N);
-        if (ws.t_swap.size() != (std::size_t)N) ws.t_swap.resize(N);
         for (int i = 0; i < N; i++) {
             ws.s_swap[i] = s[i];
             ws.t_swap[i] = t[i];

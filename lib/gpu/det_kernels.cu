@@ -15,7 +15,7 @@ __global__ void assemble_M_kernel(const real* __restrict__ orb_out, real* __rest
     const int j = (int)(idx / (N*N) % K);
     const int w = (int)(idx / ((std::size_t)K*N*N));
 
-    M_batch[idx] = orb_out[(std::size_t)(w*N + i) * (K*N) + j*N + k];
+    M_batch[idx] = orb_out[(std::size_t)(w*N + i) * (K*N) + orb_idx(j, k)];
 }
 
 void assemble_M(const real* orb_out, real* M_batch, int B, cudaStream_t stream) {
@@ -37,11 +37,8 @@ __global__ void assemble_M_combo_kernel(const real* __restrict__ tab_orb, const 
     const int j = (int)((idx / (N*N)) % K);
     const int w = (int)( idx / ((std::size_t)K*N*N));
 
-    // st_combo from physics.h, inlined: (s>0?0:1) + 2*(t>0?0:1)
-    const real sv = s[(std::size_t)w*N + i], tv = t[(std::size_t)w*N + i];
-    const int  c  = (sv > (real)0 ? 0 : 1) + 2 * (tv > (real)0 ? 0 : 1);
-
-    M_batch[idx] = tab_orb[((std::size_t)(w*N + i)*4 + c) * (K*N) + j*N + k];    
+    const int c = st_combo(s[(std::size_t)w*N + i], t[(std::size_t)w*N + i]);
+    M_batch[idx] = tab_orb[st_row((std::size_t)w*N + i, c) * (K*N) + orb_idx(j, k)];
 }
 
 void assemble_M_combo(const real* tab_orb, const real* s, const real* t, real* M_batch, int B, cudaStream_t stream) {

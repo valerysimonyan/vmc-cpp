@@ -44,156 +44,111 @@ static void shift_to_com(const T* x, T* x_sh) {
     }
 }
 
-template<typename T>
-static T psi_impl(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, bool need_inv) {
-    constexpr bool is_jet = std::is_same_v<T,Jet>;
-    using std::exp;
-
-    EvalBuffers<T> buf = get_buffers<T>(ws);
-
-    // Depending on type represent position and spins differently
-    if constexpr (is_jet) {
-        if (ws.jin.size() != (std::size_t)D) ws.jin.resize(D);
-        for (int i = 0; i < D; i++) ws.jin[i] = Jet::input(x[i],i);
+// One network forward pass: cached (value path, for backprop) or plain
+template <typename T>
+static const std::vector<T>* fwd(const Network& net, const std::vector<T>& in, ForwardCache* cache, Workspace& ws, EvalBuffers<T>& buf) {
+    if constexpr (std::is_same_v<T, double>) {
+        if (cache) { 
+            net.forward_cached(in, *cache, ws.fc_out); 
+            return &ws.fc_out; 
+        }
     }
+    return net.forward_opt<T>(in, net.params, buf.buf_a, buf.buf_b);
+}
 
-    auto coord_raw =[&](int i) -> T {
-        if constexpr (is_jet) return ws.jin[i];
-        else return x[i];
-    };
-
-    // Shift to COM coordinates for Jet and double 
-    if constexpr (is_jet) {
-        if (ws.jin_sh.size() != (std::size_t)D) ws.jin_sh.resize(D);
+// Given jet or double pass in input coordinates
+template <typename T>
+static const T* com_coordinates(const double* x, Workspace& ws) {
+    if constexpr (std::is_same_v<T, Jet>) {
+        ws.ensure_jet_buffers();
+        for (int i = 0; i < D; i++) ws.jin[i] = Jet::input(x[i], i);
         shift_to_com<Jet>(ws.jin.data(), ws.jin_sh.data());
+        return ws.jin_sh.data();
     } else {
-        if (ws.x_sh.size() != (std::size_t)D) ws.x_sh.resize(D);
         shift_to_com<double>(x, ws.x_sh.data());
-    }
-
-    auto coord = [&](int i) -> T {
-        if constexpr (is_jet) return ws.jin_sh[i];
-        else return ws.x_sh[i];
-    };
-
-    auto spin = [&](int i) -> T {
-        if constexpr (is_jet) return T(s[i]);
-        else return s[i];
-    };
-    
-    auto iso = [&](int i) -> T {
-        if constexpr (is_jet) return T(t[i]);
-        else return t[i];
-    };
-
-
-    // Forward pass also dependent on data type, depending on if we are taking a derivative in which case we need inverse, either do a regular forward pass or cached
-    auto h_forward = [&](int i) -> std::vector<T>* {
-        if constexpr (!is_jet) {
-            if (need_inv) {
-                a.h_net.forward_cached(buf.single, ws.h_caches[i], ws.fc_out);
-                return &ws.fc_out;
-            }
-        }
-        return a.h_net.forward_opt<T>(buf.single, a.h_net.params, buf.buf_a, buf.buf_b);
-    };
-    auto rho_forward = [&]() -> std::vector<T>* {
-        if constexpr (!is_jet) {
-            if (need_inv) {
-                a.rho_net.forward_cached(buf.xi, ws.rho_cache, ws.fc_out);
-                return &ws.fc_out;
-            }
-        }
-        return a.rho_net.forward_opt<T>(buf.xi, a.rho_net.params, buf.buf_a, buf.buf_b);
-    };
-    auto orb_forward = [&](int i) -> std::vector<T>* {
-        if constexpr (!is_jet) {
-            if (need_inv) {
-                a.orb_net.forward_cached(buf.single, ws.orb_caches[i], ws.fc_out);
-                return &ws.fc_out;
-            }
-        }
-        return a.orb_net.forward_opt<T>(buf.single, a.orb_net.params, buf.buf_a, buf.buf_b);
-    };
-
-    // Prepare buffers for use, then create xi = sum h(r_i)
-    if (buf.single.size() != (std::size_t)(dim+1+1)) buf.single.resize(dim+1+1);
-    if (buf.xi.size() != (std::size_t)m_feat) buf.xi.resize(m_feat);
-    else std::fill(buf.xi.begin(), buf.xi.end(), T(0.0));
-    if constexpr (!is_jet) {
-        if (need_inv && ws.h_caches.size() != (std::size_t)N) ws.h_caches.resize(N);
-    }    
-    for (int i = 0; i < N; i++) {
-        for (int d = 0; d < dim; d++) buf.single[d] = coord(i*dim + d);
-        buf.single[dim] = spin(i);
-        buf.single[dim+1] = iso(i);
-
-        std::vector<T>* h_out = h_forward(i);
-        for (int f = 0; f < m_feat; f++) buf.xi[f] = buf.xi[f] + (*h_out)[f];
-    }
-    
-    // Create rho(xi)
-    if (buf.rho.size() != (std::size_t)K) buf.rho.resize(K);
-    std::vector<T>* rho_out = rho_forward();
-    for (int i = 0; i < K; i++) buf.rho[i] = (*rho_out)[i];
-
-    // Create orbital matrices (phi_k(ri))_j
-    if constexpr (!is_jet) {
-        if (need_inv && ws.orb_caches.size() != (std::size_t)N) ws.orb_caches.resize(N);
-    }
-    if (buf.M.size() != (std::size_t)K*N*N) buf.M.resize(K*N*N);
-    for (int i = 0; i < N; i++) {
-        for (int d = 0; d < dim; d++) buf.single[d] = coord(i*dim + d);
-        buf.single[dim] = spin(i);
-        buf.single[dim+1] = iso(i);
-        std::vector<T>* orb_out = orb_forward(i);
-        for (int j = 0; j < K; j++) {
-            for (int k = 0; k < N; k++) {
-                buf.M[j*(N*N)+k*N+i] = (*orb_out)[j*N+k];
-            }
-        }
-    }
-   
-    // Compute determinant of orbital matrices det phi_k, then compute sum rho_k det phi_k
-    T sum{};
-    if constexpr (!is_jet) {
-        if (ws.dets.size() != (std::size_t)K) ws.dets.resize(K);
-        if (buf.M_scratch.size() != (std::size_t)N*N) buf.M_scratch.resize(N*N);
-        if (need_inv && ws.dMinv.size() != (std::size_t)(K*N*N)) ws.dMinv.resize(K*N*N);
-    }
-    for (int i = 0; i < K; i++) {
-        T det{};
-        if constexpr (is_jet) {
-            det = det_jet_from_minv(&buf.M[i*(N*N)], N, ws.jd_Mval, ws.jd_Minv, ws.jd_piv, ws.jd_col, ws.jd_G, ws.jd_B);
-        } else {
-            for (int j = 0; j < N*N; j++) buf.M_scratch[j] = buf.M[i*N*N + j];
-            if (need_inv) {
-                det = lu_det_inv(buf.M_scratch, N, ws.dMinv_k, ws.piv, ws.col_scratch);
-                for (int j = 0; j < N*N; j++) ws.dMinv[i*N*N + j] = ws.dMinv_k[j];
-            } else {
-                det = lu_det<double>(buf.M_scratch, N, ws.piv);
-            }
-        }
-         if constexpr (is_jet) sum = sum + buf.rho[i] * det;
-        else ws.dets[i] = det;
-    }
-
-    // psi = envelope * exp(J) * S, 
-    if constexpr (!is_jet) {
-        const double S = S_sum(buf.rho.data(), ws.dets.data());
-        return exp(envelope::log_env_J(a.alpha, a.jc.data(), ws.x_sh.data(), s, t)) * S;
-    } else {
-        Jet r2{};
-        for (int i = 0; i < D; i++) r2 = r2 + coord(i) * coord(i);
-        double xs[D];
-        for (int i = 0; i < D; i++) xs[i] = coord(i).v;
-        Jet Jj;
-        Jj.v = envelope::jastrow<double, double>(xs, s, t, a.jc.data(), Jj.g.data(), &Jj.l);
-        return exp(envelope::log_factor(a.alpha, envelope::radius(r2)) + Jj) * sum;
+        return ws.x_sh.data();
     }
 }
 
+// Evalute xi = sum_i h(r_i) and rho(xi), store in buffers
+template <typename T>
+static void eval_rho(const T* x_sh, const double* s, const double* t, const Ansatz& a, Workspace& ws, EvalBuffers<T>& buf, bool cache) {
+    // As xi accumulates initialize to zero 
+    std::fill(buf.xi.begin(), buf.xi.end(), T(0.0));
 
+    // Compute xi = sum_i h(r_i)
+    for (int i = 0; i < N; i++) {
+        particle_input(x_sh + i*dim, s[i], t[i], buf.single.data());
+        const std::vector<T>* h_out = fwd(a.h_net, buf.single, cache ? &ws.h_caches[i] : nullptr, ws, buf);
+        for (int f = 0; f < m_feat; f++) buf.xi[f] = buf.xi[f] + (*h_out)[f];
+    }
+
+    // Compute rho(xi)
+    const std::vector<T>* rho_out = fwd(a.rho_net, buf.xi, cache ? &ws.rho_cache : nullptr, ws, buf);
+    for (int k = 0; k < K; k++) buf.rho[k] = (*rho_out)[k];
+}
+
+// Evaluate orbital matrices phi_k(r_i) and store in buffer
+template <typename T>
+static void eval_slater(const T* x_sh, const double* s, const double* t, const Ansatz& a, Workspace& ws, EvalBuffers<T>& buf, bool cache) {
+    for (int i = 0; i < N; i++) {
+        particle_input(x_sh + i*dim, s[i], t[i], buf.single.data());
+        const std::vector<T>* orb_out = fwd(a.orb_net, buf.single, cache ? &ws.orb_caches[i] : nullptr, ws, buf);
+        for (int k = 0; k < K; k++) {
+            for (int row = 0; row < N; row++) buf.M[slater_idx(k, row, i)] = (*orb_out)[orb_idx(k, row)];
+        }
+    }
+}
+
+// Evaluate determinants of orbital matrices, then combine with rho to get S = sum_k rho_k det phi_k
+template <typename T>
+static T eval_S(Workspace& ws, EvalBuffers<T>& buf, bool need_inv) {
+    if constexpr (std::is_same_v<T, Jet>) {
+        T S{};
+        for (int k = 0; k < K; k++) {
+            const T det = det_jet_from_minv(&buf.M[slater_idx(k, 0, 0)], N, ws.jd_Mval, ws.jd_Minv, ws.jd_piv, ws.jd_col, ws.jd_G, ws.jd_B);
+            S = S + buf.rho[k] * det;
+        }
+        return S;
+    } else {
+        for (int k = 0; k < K; k++) {
+            for (int j = 0; j < N*N; j++) buf.M_scratch[j] = buf.M[slater_idx(k, 0, 0) + j];
+            if (need_inv) {
+                ws.dets[k] = lu_det_inv(buf.M_scratch, N, ws.dMinv_k, ws.piv, ws.col_scratch);
+                for (int j = 0; j < N*N; j++) ws.dMinv[slater_idx(k, 0, 0) + j] = ws.dMinv_k[j];
+            } else {
+                ws.dets[k] = lu_det<double>(buf.M_scratch, N, ws.piv);
+            }
+        }
+        return S_sum(buf.rho.data(), ws.dets.data());
+    }
+}
+
+// psi = envelope * exp(J) * sum_k rho_k det M_k
+template<typename T>
+static T psi_impl(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, bool need_inv) {
+    using std::exp;
+    constexpr bool is_jet = std::is_same_v<T, Jet>;
+    const bool cache = !is_jet && need_inv;   
+    EvalBuffers<T> buf = get_buffers<T>(ws);
+
+    const T* x_sh = com_coordinates<T>(x, ws);
+    eval_rho(x_sh, s, t, a, ws, buf, cache);
+    eval_slater(x_sh, s, t, a, ws, buf, cache);
+    const T S = eval_S(ws, buf, need_inv);
+
+    // Combine with envelope and jastrow, depending on type
+    if constexpr (!is_jet) {
+        return exp(envelope::log_env_J(a.alpha, a.jc.data(), x_sh, s, t)) * S;
+    } else {
+        const Jet r2 = envelope::r2(x_sh);
+        double xs[D];
+        for (int i = 0; i < D; i++) xs[i] = x_sh[i].v;
+        Jet Jj;
+        Jj.v = envelope::jastrow<double, double>(xs, s, t, a.jc.data(), Jj.g.data(), &Jj.l);
+        return exp(envelope::log_factor(a.alpha, envelope::radius(r2)) + Jj) * S;
+    }
+}
 
 // Double evaluation of psi 
 double psi (const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, bool need_inv) {
@@ -214,29 +169,18 @@ Jet jpsi (const double* x, const double* s, const double* t, const Ansatz& a, Wo
 
 // Preompute h_net and orb_net for all values of spin and isospin
 void build_st_table(const double* x, const Ansatz& a, Workspace& ws) {
-    if (ws.x_sh.size() != (std::size_t)D) ws.x_sh.resize(D);
     shift_to_com(x, ws.x_sh.data());
-    
-    if(ws.tab_h.size() != (std::size_t)N*4*m_feat) ws.tab_h.resize((std::size_t)N*4*m_feat);
-    if(ws.tab_orb.size() != (std::size_t)N*4*K*N) ws.tab_orb.resize((std::size_t)N*4*K*N  );
-    if(ws.dsingle.size() != (std::size_t)(dim+2)) ws.dsingle.resize((std::size_t)(dim+2));
-
-    static const double s_of[4] = {1.0, -1.0, 1.0, -1.0};
-    static const double t_of[4] = {1.0, 1.0, -1.0, -1.0};
 
     for (int i = 0; i < N; i++) {
-        for (int d = 0; d < dim; d++) ws.dsingle[d] = ws.x_sh[i*dim+d];
         for (int c = 0; c < 4; c++) {
-            ws.dsingle[dim] = s_of[c];
-            ws.dsingle[dim+1] = t_of[c];
+            particle_input(ws.x_sh.data() + i*dim, st_spin<double>(c), st_iso<double>(c), ws.dsingle.data());
 
             std::vector<double>* h_out = a.h_net.forward_opt<double>(ws.dsingle, a.h_net.params, ws.dbuf_a, ws.dbuf_b);
-            double* dst_h = &ws.tab_h[((std::size_t)i*4 + c)*m_feat];
+            double* dst_h = &ws.tab_h[st_row(i, c)*m_feat];
             for (int f = 0; f < m_feat; f++) dst_h[f] = (*h_out)[f];
-
             
             std::vector<double>* orb_out = a.orb_net.forward_opt<double>(ws.dsingle, a.orb_net.params, ws.dbuf_a, ws.dbuf_b);
-            double* dst_orb = &ws.tab_orb[((std::size_t)i*4 + c)*(K*N)];
+            double* dst_orb = &ws.tab_orb[st_row(i, c)*(K*N)];
             for (int j = 0; j < K*N; j++) dst_orb[j] = (*orb_out)[j];
         }
     }
@@ -247,26 +191,22 @@ void build_st_table(const double* x, const Ansatz& a, Workspace& ws) {
 double S_from_table(const double* s, const double* t, const Ansatz& a, Workspace& ws) {
     assert(ws.table_valid);
 
-    if (ws.tab_xi.size() != (std::size_t)m_feat) ws.tab_xi.resize(m_feat);
     std::fill(ws.tab_xi.begin(), ws.tab_xi.end(), 0.0);
     for (int i = 0; i < N; i++) {
         int c = st_combo(s[i],t[i]);
-        const double* h_i = &ws.tab_h[((std::size_t)i*4 + c)*m_feat];
+        const double* h_i = &ws.tab_h[st_row(i, c)*m_feat];
         for (int f = 0; f < m_feat; f++) ws.tab_xi[f] += h_i[f];
     }
 
-    if (ws.tab_rho.size() != (std::size_t)K) ws.tab_rho.resize(K);
     std::vector<double>* rho_out = a.rho_net.forward_opt<double> (ws.tab_xi, a.rho_net.params, ws.dbuf_a, ws.dbuf_b);
     for (int i = 0; i < K; i++) ws.tab_rho[i] = (*rho_out)[i];
-
-    if (ws.tab_M.size() != (std::size_t)N*N) ws.tab_M.resize((std::size_t)N*N); 
 
     double S = 0.0;
     for (int j = 0; j < K; j++) {
         for (int i = 0; i < N; i++) {
             int c = st_combo(s[i], t[i]);
-            const double* orb_i = &ws.tab_orb[((std::size_t)i*4 +c)*(K*N)];
-            for (int k = 0; k < N; k++) ws.tab_M[k*N + i] = orb_i[j*N + k];
+            const double* orb_i = &ws.tab_orb[st_row(i, c)*(K*N)];
+            for (int k = 0; k < N; k++) ws.tab_M[slater_idx(0, k, i)] = orb_i[orb_idx(j, k)];
         }
         double det = lu_det<double>(ws.tab_M, N, ws.tab_piv);
         S += ws.tab_rho[j] * det;
@@ -294,24 +234,20 @@ double swap_ratio(const double* s, const double* t, int i, int j, double s_new_i
         int c_new_j = st_combo(s_new_j, t_new_j);
 
         // Evaluate updated xi, as xi is just sum of h's just subtract the old modified h and add the new one
-        if (ws.sm_xi.size() != (std::size_t)m_feat) ws.sm_xi.resize(m_feat);
-        const double* h_old_i = &ws.tab_h[((std::size_t)i*4 + c_old_i) * m_feat];
-        const double* h_new_i = &ws.tab_h[((std::size_t)i*4 + c_new_i) * m_feat];
-        const double* h_old_j = &ws.tab_h[((std::size_t)j*4 + c_old_j) * m_feat];
-        const double* h_new_j = &ws.tab_h[((std::size_t)j*4 + c_new_j) * m_feat];
+        const double* h_old_i = &ws.tab_h[st_row(i, c_old_i)  * m_feat];
+        const double* h_new_i = &ws.tab_h[st_row(i, c_new_i) * m_feat];
+        const double* h_old_j = &ws.tab_h[st_row(j, c_old_j) * m_feat];
+        const double* h_new_j = &ws.tab_h[st_row(j, c_new_j) * m_feat];
         for (int f = 0; f < m_feat; f++) ws.sm_xi[f] = ws.dxi[f] + (h_new_i[f]-h_old_i[f]) + (h_new_j[f]-h_old_j[f]);
 
-        if (ws.sm_rho.size() != (std::size_t)K) ws.sm_rho.resize(K);
         std::vector<double>* rho_out = a.rho_net.forward_opt<double>(ws.sm_xi, a.rho_net.params, ws.dbuf_a, ws.dbuf_b);
         for (int k = 0; k < K; k++) ws.sm_rho[k] = (*rho_out)[k];
 
         // Record column change
-        if (ws.sm_dci.size() != (std::size_t)K*N) ws.sm_dci.resize((std::size_t)K*N);
-        if (ws.sm_dcj.size() != (std::size_t)K*N) ws.sm_dcj.resize((std::size_t)K*N);
-        const double* orb_old_i = &ws.tab_orb[((std::size_t)i*4 + c_old_i) * (K*N)];
-        const double* orb_new_i = &ws.tab_orb[((std::size_t)i*4 + c_new_i) * (K*N)];
-        const double* orb_old_j = &ws.tab_orb[((std::size_t)j*4 + c_old_j) * (K*N)];
-        const double* orb_new_j = &ws.tab_orb[((std::size_t)j*4 + c_new_j) * (K*N)];
+        const double* orb_old_i = &ws.tab_orb[st_row(i, c_old_i) * (K*N)];
+        const double* orb_new_i = &ws.tab_orb[st_row(i, c_new_i) * (K*N)];
+        const double* orb_old_j = &ws.tab_orb[st_row(j, c_old_j) * (K*N)];
+        const double* orb_new_j = &ws.tab_orb[st_row(j, c_new_j) * (K*N)];
         for (int kn = 0; kn < K*N; kn++) {
             ws.sm_dci[kn] = orb_new_i[kn]-orb_old_i[kn];
             ws.sm_dcj[kn] = orb_new_j[kn]-orb_old_j[kn];
@@ -319,7 +255,7 @@ double swap_ratio(const double* s, const double* t, int i, int j, double s_new_i
 
         double S_new = 0.0;
         for(int k = 0; k < K; k++) {
-            double ratio2 = det_ratio_rank2(&ws.dMinv[(std::size_t)k*N*N], N, &ws.sm_dci[(std::size_t)k*N], i, &ws.sm_dcj[(std::size_t)k*N], j);
+            double ratio2 = det_ratio_rank2(&ws.dMinv[slater_idx(k, 0, 0)], N, &ws.sm_dci[orb_idx(k, 0)], i, &ws.sm_dcj[orb_idx(k, 0)], j);
             S_new += ws.sm_rho[k] * ws.dets[k] * ratio2;
         }
         return S_new/S0;
@@ -340,7 +276,6 @@ void fill_O(const Ansatz& a, Workspace& ws, double S, std::vector<double>& O_out
     std::size_t n_rho = a.rho_net.params.size();
     std::size_t n_orb = a.orb_net.params.size();
 
-    if (ws.seed_rho.size() != (std::size_t)K) ws.seed_rho.resize(K);
     for (int i = 0; i < K; i++) ws.seed_rho[i] = ws.dets[i];
     a.rho_net.backprop(ws.rho_cache, ws.seed_rho, ws.dtheta_rho, ws.delta_a, ws.delta_b, &ws.dpsi_dxi);
     for (std::size_t p = 0; p < n_rho; p++) O_out[n_h + p] = ws.dtheta_rho[p]/S;
@@ -349,12 +284,11 @@ void fill_O(const Ansatz& a, Workspace& ws, double S, std::vector<double>& O_out
     for (int i = 0; i < N; i++) a.h_net.backprop_acc(ws.h_caches[i], ws.dpsi_dxi, ws.dtheta_h, ws.delta_a, ws.delta_b);
     for (std::size_t p = 0; p < n_h; p++) O_out[p] = ws.dtheta_h[p]/S;
 
-    if (ws.seed_orb.size() != (std::size_t)(K*N)) ws.seed_orb.resize(K*N);
     ws.dtheta_orb.assign(n_orb, 0.0);
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < K; j++) {
             for (int k = 0; k < N; k++) {
-                ws.seed_orb[j*N+k] = ws.drho[j] * ws.dets[j] * ws.dMinv[j*(N*N) + i*N + k];
+                ws.seed_orb[orb_idx(j, k)] = ws.drho[j] * ws.dets[j] * ws.dMinv[slater_idx(j, i, k)];
             }
         }
         a.orb_net.backprop_acc(ws.orb_caches[i], ws.seed_orb, ws.dtheta_orb, ws.delta_a, ws.delta_b);
@@ -374,10 +308,7 @@ void assemble_O(const double* x, const double* s, const double* t, const Ansatz&
     if (O_out.size() != n_params) O_out.resize(n_params);
 
     psi(x, s, t, a, ws, true);
+    const double S = S_sum(ws.drho.data(), ws.dets.data());
 
-    double S = 0.0;
-    for (int i = 0; i < K; i++) {
-        S += ws.drho[i] * ws.dets[i];
-    }
     fill_O(a, ws, S, O_out, s, t);
 }

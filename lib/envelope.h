@@ -22,7 +22,7 @@ VMC_HD inline scalar_t<T> eps2() {
 template <typename T>
 VMC_HD inline T r2(const T* x) {
     T s = T(0);
-    for (int i = 0; i < D; i++) s += x[i] * x[i];
+    for (int i = 0; i < D; i++) s = s + x[i] * x[i];
     return s;
 }
 

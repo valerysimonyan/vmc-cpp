@@ -65,10 +65,10 @@ __global__ void ex_xi_swap_kernel(const real* __restrict__ xi_psi, const real* _
     const real si = s[w*N + i], ti = t[w*N + i], sj = s[w*N + j], tj = t[w*N + j];
     real sni, tni, snj, tnj;
     ex_swapped_labels(si, ti, sj, tj, type, sni, tni, snj, tnj);
-    const std::size_t oi = ((w*N + i)*4 + ex_combo(si, ti))  * m_feat;
-    const std::size_t ni = ((w*N + i)*4 + ex_combo(sni, tni)) * m_feat;
-    const std::size_t oj = ((w*N + j)*4 + ex_combo(sj, tj))  * m_feat;
-    const std::size_t nj = ((w*N + j)*4 + ex_combo(snj, tnj)) * m_feat;
+    const std::size_t oi = st_row(w*N + i, st_combo(si, ti)) * m_feat;
+    const std::size_t ni = st_row(w*N + i, st_combo(sni, tni)) * m_feat;
+    const std::size_t oj = st_row(w*N + j, st_combo(sj, tj))  * m_feat;
+    const std::size_t nj = st_row(w*N + j, st_combo(snj, tnj)) * m_feat;
 
     for (int f = threadIdx.x; f < m_feat; f += blockDim.x)
         xi_swap[ls*m_feat + f] = xi_psi[w*m_feat + f] + (tab_h[ni + f] - tab_h[oi + f]) + (tab_h[nj + f] - tab_h[oj + f]);
@@ -97,15 +97,15 @@ __global__ void ex_S_swap_kernel(const real* __restrict__ rho_swap, const real* 
     const real si = s[w*N + i], ti = t[w*N + i], sj = s[w*N + j], tj = t[w*N + j];
     real sni, tni, snj, tnj;
     ex_swapped_labels(si, ti, sj, tj, type, sni, tni, snj, tnj);
-    const real* orb_oi = tab_orb + ((w*N + i)*4 + ex_combo(si, ti))  * (K*N);
-    const real* orb_ni = tab_orb + ((w*N + i)*4 + ex_combo(sni, tni)) * (K*N);
-    const real* orb_oj = tab_orb + ((w*N + j)*4 + ex_combo(sj, tj))  * (K*N);
-    const real* orb_nj = tab_orb + ((w*N + j)*4 + ex_combo(snj, tnj)) * (K*N);
+    const real* orb_oi = tab_orb + st_row(w*N + i, st_combo(si, ti)) * (K*N);
+    const real* orb_ni = tab_orb + st_row(w*N + i, st_combo(sni, tni)) * (K*N);
+    const real* orb_oj = tab_orb + st_row(w*N + j, st_combo(sj, tj)) * (K*N);
+    const real* orb_nj = tab_orb + st_row(w*N + j, st_combo(snj, tnj)) * (K*N);
 
     real S_new = (real)0;
     for (int k = 0; k < K; k++) {
-        const real* Mi = Minv_batch + (w*K + k)*(N*N) + (std::size_t)i*N;
-        const real* Mj = Minv_batch + (w*K + k)*(N*N) + (std::size_t)j*N;
+        const real* Mi = Minv_batch + slater_idx(w*K + k, i, 0);
+        const real* Mj = Minv_batch + slater_idx(w*K + k, j, 0);
         real a00 = (real)0, a01 = (real)0, a10 = (real)0, a11 = (real)0;
         for (int m = 0; m < N; m++) {
             const real dci = orb_ni[k*N + m] - orb_oi[k*N + m];
