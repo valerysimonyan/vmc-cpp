@@ -19,6 +19,7 @@
 #include "gpu/planner.h"
 #include <cublas_v2.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cmath>
@@ -135,20 +136,34 @@ DescentResult descent_mg(Ansatz& a) {
     ThreadPool pool(n_thread);
 
     const bool same_seed = std::getenv("VMC_MG_SAME_SEED") && std::string(std::getenv("VMC_MG_SAME_SEED")) == "1";  // True if we set VMC_MG_SAME_SEED to 1, otherwise crash
+    
+    // Which GPUs to use
     // VMC_GPUS = auto for filling up memory
+    // VMC_GPUS = one single GPU where the most walkers fit
+    // VMC_NGPU = 2 GPU 0 and 1 with n_walkers each
+    // (default) one GPU (VMC_CUDA_DEVICE sets which, otherwise the one with the most memory)
     const char* gp = std::getenv("VMC_GPUS"); 
+    const char* ng = std::getenv("VMC_NGPU"); 
     std::vector<GpuPlan> plan;
     if (gp && std::string(gp) == "auto") {
         plan = plan_gpus(a);
-    } else {  
-        // Otherwise both devices got filled  
-        for (int d = 0; d < 2; d++) { 
-            GpuPlan g; 
-            g.dev = d; 
-            g.B = (std::size_t)n_walkers; 
-            plan.push_back(g); 
+    } else if (gp && std::string(gp) == "one") {
+        const std::vector<GpuPlan> all = plan_gpus(a);
+        plan.push_back(*std::max_element(all.begin(), all.end(), [](const GpuPlan& x, const GpuPlan& y) { return x.B < y.B; }));
+    } else if (ng && std::string(ng) == "2") {
+        for (int d = 0; d < 2; d++) {
+            GpuPlan g;
+            g.dev = d;
+            g.B = (std::size_t)n_walkers;
+            plan.push_back(g);
         }
+    } else {
+        GpuPlan g;
+        g.dev = gpu_select_device(true);
+        g.B = (std::size_t)n_walkers;
+        plan.push_back(g);
     }
+
     // If in plan mode print allocations
     if (std::getenv("VMC_PLAN_ONLY")) {   
         std::printf("plan only: arena for n_walkers=%d would be %.3f GiB\n", n_walkers, (double)arena_bytes_for(a, (std::size_t)n_walkers) / (1024.0*1024*1024));

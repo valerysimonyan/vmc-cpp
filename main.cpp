@@ -29,10 +29,7 @@ int main() {
     }
 
 #ifdef VMC_CUDA
-    const char* gp = std::getenv("VMC_GPUS");
-    const char* ng = std::getenv("VMC_NGPU");
-    const bool multi = (gp && std::string(gp) == "auto") || (ng && std::string(ng) == "2");
-    DescentResult result = multi ? descent_mg(ansatz) : descent(ansatz);
+    DescentResult result = descent_mg(ansatz);   
 #else
     DescentResult result = descent(ansatz);
 #endif    
