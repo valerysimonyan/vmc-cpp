@@ -24,7 +24,7 @@
 #include "../lib/gpu/local_e.h"
 #include "../lib/gpu/gpu_sampler.h"
 #include "../lib/gpu/backprop.h"
-#include "../lib/descent.h"
+#include "../lib/train.h"
 #include "../lib/sr.h"
 #include "../lib/cg.h"
 #include "../lib/checkpoint.h"

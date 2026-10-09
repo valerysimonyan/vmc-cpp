@@ -3,7 +3,7 @@
 #include "layouts.h"
 #include "../cg.h"
 #include "../sr.h"
-#include "../descent.h"
+#include "../train.h"
 
 #include <functional>
 #include <vector>
@@ -20,36 +20,29 @@ double rms_update_device(cublasHandle_t h, const double* grad, double* v_rms, do
 
 void grad_device(cublasHandle_t h, const opool_t* O_pool, const double* E_pool, const unsigned char* valid, const double* O_exp, std::size_t Ns, std::size_t P, long long n_valid, const ClipStats& cs, double* E_clip, double* grad, cudaStream_t stream = 0);
 
-struct SROpDevice {
-    cublasHandle_t h = nullptr;
-    const opool_t* O_pool = nullptr;             // float under fp32_opool
-    const double* O_exp = nullptr, *m = nullptr, *S_diag = nullptr, *d_rms = nullptr;
-
-    double* t = nullptr;                       
-    std::size_t Ns = 0, P = 0;
-    long long n_valid = 0;
-    double lambda_diag = 0.0, eps_abs = 0.0;
-    void apply(const double* v, double* out, bool raw = false);   
-};
-
-
 void M_inv_device(const double* S_diag, const double* d_rms, double lambda_t, double* M_inv, std::size_t P, cudaStream_t stream = 0);
 
 using DeviceMatVec = std::function<void(const double* v, double* out)>;
 
 CGResult cg_solve_device(cublasHandle_t h, const DeviceMatVec& matvec, const double* b, double* x, const double* M_inv_diag, std::size_t n, double rel_tol, int max_iters, double* r, double* z, double* p, double* Ap, long long* n_scalar_downloads = nullptr, cudaStream_t stream = 0);
 
-SRStepLog SR_step_device(DeviceState& ds, cublasHandle_t h, Ansatz& a, int iter, std::size_t n_samples, long long n_valid, std::vector<double>& delta_host, long long* n_scalar_downloads = nullptr, cudaStream_t stream = 0);
 
-struct MgRep { 
+
+struct ReplicaRef { 
     DeviceState* ds = nullptr;   // Initialize DeviceState as null
     cublasHandle_t h = nullptr;  // Handle of device
     int dev = 0;                 // Device number
     std::size_t Ns = 0;          // Device sample rows
 };
 
-void O_exp_mg(const std::vector<MgRep>& R, std::size_t P, long long n_valid);
+// <O> over every replica's valid rows; the result is copied to every replica
+void O_exp_replicas(const std::vector<ReplicaRef>& R, std::size_t P, long long n_valid);
 
-void grad_mg(const std::vector<MgRep>& R, std::size_t P, long long n_valid, const ClipStats& cs);
+// Energy gradient with clipped local energies, summed into replica 0
+void grad_replicas(const std::vector<ReplicaRef>& R, std::size_t P, long long n_valid, const ClipStats& cs);
 
-SRStepLog SR_step_device_mg(const std::vector<MgRep>& R, Ansatz& a, int iter, long long n_valid, std::vector<double>& delta_host, long long* n_scalar_downloads = nullptr);
+// out = (S + regularisation) v over every replica's rows; v and out live on replica 0
+void sr_apply(const std::vector<ReplicaRef>& R, std::size_t P, long long n_valid, double lambda_diag, const double* v, double* out, bool raw, long long* n_scalar_downloads = nullptr);
+
+// One SR step (CG solve, trust and norm caps, parameter update); returns the step's log
+SRStepLog SR_step_device(const std::vector<ReplicaRef>& R, Ansatz& a, int iter, long long n_valid, std::vector<double>& delta_host, long long* n_scalar_downloads = nullptr);

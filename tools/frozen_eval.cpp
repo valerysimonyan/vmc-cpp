@@ -2,7 +2,7 @@
 // configure modes (evaluate_frozen picks the device or CPU path itself), so the
 // SAME checkpoint can be evaluated by both samplers for a cross-sampler check.
 #include "../lib/checkpoint.h"
-#include "../lib/descent.h"
+#include "../lib/train.h"
 #include "../lib/wavefunction.h"
 
 #include <cstdio>

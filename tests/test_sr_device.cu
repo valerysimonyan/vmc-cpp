@@ -7,7 +7,7 @@
 #include "../lib/gpu/backprop.h"
 #include "../lib/gpu/exchange_kernels.h"
 #include "../lib/gpu/sr_device.h"
-#include "../lib/descent.h"
+#include "../lib/train.h"
 #include "../lib/sr.h"
 #include "../lib/cg.h"
 #include "../lib/util.h"
@@ -118,34 +118,6 @@ static void test_statistics(cublasHandle_t h, ThreadPool& pool) {
     CHECK(wv <= 1e-12 && wd <= 1e-12 && wm <= 1e-12, "device RMS update disagrees with descent()'s loop");
 }
 
-// --- D2: S * v ---------------------------------------------------------------------
-static void test_apply(cublasHandle_t h, ThreadPool& pool) {
-    Pool pl = make_pool(3000, 2500, 12);
-    std::mt19937_64 rng(5); std::normal_distribution<double> g(0, 1); std::uniform_real_distribution<double> u(0.1, 2.0);
-    std::vector<double> v(pl.P), d_rms(pl.P); for (auto& x : v) x = g(rng); for (auto& x : d_rms) x = u(rng);
-
-    std::vector<double> Oexp_c;
-    masked_O_exp(pl.O, pl.v, pl.Ns, pl.P, &pool, Oexp_c);
-    SROp op; op.init(pl.O, Oexp_c, pl.Ns, pl.P, 0.7, sr_eps, &pool, d_rms.data(), pl.v.data(), pl.nv);
-    std::vector<double> out_raw, out_damp;
-    op.apply(v, out_raw, true); op.apply(v, out_damp, false);
-
-    DeviceArray<opool_t> O; DeviceArray<double> m, Oexp, Sd, dr, t, dv, dout; DeviceArray<unsigned char> V;
-    opool_up(O, pl.O); V.alloc(pl.Ns); V.up(pl.v.data(), pl.Ns); m.alloc(pl.Ns); t.alloc(pl.Ns);
-    up(Oexp, Oexp_c); up(Sd, op.S_diag); up(dr, d_rms); up(dv, v); dout.alloc(pl.P);
-    build_mask(V.d, m.d, pl.Ns);
-    SROpDevice od; od.h = h; od.O_pool = O.d; od.O_exp = Oexp.d; od.m = m.d; od.S_diag = Sd.d; od.d_rms = dr.d; od.t = t.d;
-    od.Ns = pl.Ns; od.P = pl.P; od.n_valid = pl.nv; od.lambda_diag = 0.7; od.eps_abs = sr_eps;
-    od.apply(dv.d, dout.d, true);  const double wr = worst_rel(down(dout, pl.P), out_raw);
-    od.apply(dv.d, dout.d, false); const double wd = worst_rel(down(dout, pl.P), out_damp);
-    std::printf("  S*v apply: raw rel %.2e   damped rel %.2e\n", wr, wd);
-    // fp32_opool: same float-rounded values on both sides, but the device sums
-    // with the custom mixed-precision kernels (32 slabs, then a tree) instead of
-    // cuBLAS -- a different order, magnified on entries with sign cancellation
-    // by this plain-relative metric. Measured 1.1e-11 raw / 6.6e-11 damped.
-    CHECK(wr <= tol::fo(1e-11, 5e-10), "device raw apply disagrees with SROp::apply");
-    CHECK(wd <= tol::fo(1e-11, 5e-10), "device damped apply disagrees with SROp::apply");
-}
 
 // --- D3a: CG on a synthetic SPD system ---------------------------------------------------
 static void test_cg_synthetic(cublasHandle_t h) {
@@ -223,7 +195,9 @@ static void test_sr_real(cublasHandle_t h, ThreadPool& pool, std::vector<Workspa
     Ansatz a_cpu = a; SROp sr_op; std::vector<double> delta_c(P, 0.0), Minv(P), S_delta;
     const SRStepLog lc = SR_step(grad_c, O_h, Oexp_c, a_cpu, sr_op, delta_c, iter, P, &pool, d_rms.data(), Ns, V_h.data(), nv, Minv, S_delta);
 
-    // ---- device ----
+    // ---- device: one replica, the production SR step ----
+    int dev = 0; CUDA_CHECK(cudaGetDevice(&dev));
+    const std::vector<ReplicaRef> R1{ReplicaRef{&ds, h, dev, Ns}};
     auto device_step = [&](Ansatz& a_dev, std::vector<double>& delta_d, long long& ndl) {
         ds.v_rms_d.zero(); ds.delta_d.zero();
         build_mask(ds.valid_pool.d, ds.mask_d.d, Ns);
@@ -231,7 +205,7 @@ static void test_sr_real(cublasHandle_t h, ThreadPool& pool, std::vector<Workspa
         const ClipStats cs = clip_stats(E_h, V_h, Ns, nv);
         grad_device(h, ds.O_pool.d, ds.E_pool.d, ds.valid_pool.d, ds.O_exp_d.d, Ns, P, nv, cs, ds.E_clip_d.d, ds.grad_d.d);
         rms_update_device(h, ds.grad_d.d, ds.v_rms_d.d, ds.d_rms_d.d, P);
-        return SR_step_device(ds, h, a_dev, iter, Ns, nv, delta_d, &ndl);
+        return SR_step_device(R1, a_dev, iter, nv, delta_d, &ndl);
     };
     Ansatz a_dev1 = a, a_dev2 = a; std::vector<double> delta_d1, delta_d2; long long ndl1 = 0, ndl2 = 0;
     const SRStepLog ld = device_step(a_dev1, delta_d1, ndl1);
@@ -270,10 +244,25 @@ static void test_sr_real(cublasHandle_t h, ThreadPool& pool, std::vector<Workspa
         Minv_h[j] = 1.0 / (hop.S_diag[j] * (1.0 + lambda_t) + dd);
     }
     auto host_mv = [&](const std::vector<double>& vv, std::vector<double>& out) { hop.apply(vv, out); };
+    DeviceMatVec dev_mv = [&](const double* vv, double* out) { sr_apply(R1, P, nv, lambda_t, vv, out, false); };
 
-    SROpDevice dop; dop.h = h; dop.O_pool = ds.O_pool.d; dop.O_exp = ds.O_exp_d.d; dop.m = ds.mask_d.d; dop.S_diag = ds.S_diag_d.d;
-    dop.d_rms = ds.d_rms_d.d; dop.t = ds.t_ns_d.d; dop.Ns = Ns; dop.P = P; dop.n_valid = nv; dop.lambda_diag = lambda_t; dop.eps_abs = sr_eps;
-    DeviceMatVec dev_mv = [&](const double* vv, double* out) { dop.apply(vv, out, false); };
+    // S * v on this real pool: the production operator (sr_apply) against SROp::apply, raw and damped
+    {
+        std::mt19937_64 rng(5); std::normal_distribution<double> g(0, 1);
+        std::vector<double> v(P); for (auto& x : v) x = g(rng);
+        std::vector<double> out_raw, out_damp;
+        hop.apply(v, out_raw, true); hop.apply(v, out_damp, false);
+        DeviceArray<double> dv, dout; up(dv, v); dout.alloc(P);
+        sr_apply(R1, P, nv, lambda_t, dv.d, dout.d, true);  const double wr = worst_rel(down(dout, P), out_raw);
+        sr_apply(R1, P, nv, lambda_t, dv.d, dout.d, false); const double wd = worst_rel(down(dout, P), out_damp);
+        std::printf("    S*v apply (sr_apply vs SROp::apply): raw rel %.2e   damped rel %.2e\n", wr, wd);
+        // fp32_opool: same float-rounded values on both sides, but the device sums with the mixed-precision
+        // kernels (32 slabs, then a tree) instead of cuBLAS -- a different order, magnified on entries with
+        // sign cancellation by this plain-relative metric.
+        CHECK(wr <= tol::fo(1e-11, 5e-10), "device raw apply disagrees with SROp::apply");
+        CHECK(wd <= tol::fo(1e-11, 5e-10), "device damped apply disagrees with SROp::apply");
+    }
+
 
     auto rel_diff = [&](const std::vector<double>& x, const std::vector<double>& y) {
         double nn = 0, dd = 0; for (std::size_t j = 0; j < P; j++) { nn += (x[j]-y[j])*(x[j]-y[j]); dd += y[j]*y[j]; } return std::sqrt(nn / dd);
@@ -316,7 +305,6 @@ int main() {
     std::printf("  sr_rms_damp = %s\n", sr_rms_damp ? "true" : "false");
     try {
         test_statistics(h, pool);
-        test_apply(h, pool);
         test_cg_synthetic(h);
         test_sr_real(h, pool, wss);
     } catch (const std::exception& e) {

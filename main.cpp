@@ -5,7 +5,8 @@
 
 #include "lib/config.h"
 #include "lib/wavefunction.h"
-#include "lib/descent.h"
+#include "lib/train.h"
+#include "lib/checkpoint.h"
 #include "lib/constants.h"
 #include "lib/network.h"
 
@@ -28,18 +29,15 @@ int main() {
         load_transfer(transfer_from, ansatz);
     }
 
-#ifdef VMC_CUDA
-    DescentResult result = descent_mg(ansatz);   
-#else
-    DescentResult result = descent(ansatz);
-#endif    
+    DescentResult result = train(ansatz);   
+
     std::cout << "Final E_loc: " << result.El_exp << std::endl;
     std::cout << "Final error: " << result.El_err << std::endl; 
     std::cout << "Final variance: " << result.var << std::endl; 
     std::cout << "Final acceptance: " << result.acceptance << std::endl;
 
-    load_checkpoint("best_checkpoint.txt", ansatz);
     DescentResult eval = evaluate_frozen(ansatz);
+
     std::cout << "Frozen-eval E: " << eval.El_exp << " +/- " << eval.El_err
               << ", var: " << eval.var << ", r_rms: " << eval.r_rms << std::endl;
 
