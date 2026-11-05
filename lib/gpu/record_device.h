@@ -12,7 +12,7 @@ struct RecordTimes {
     long long n_fallback = 0; // walkers routed to the host rank-2 fallback
 };
 
-void record_batch_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a, Workspace& ws, int B, double step, int records, bool with_O, RecordTimes* times = nullptr, cudaStream_t stream = 0);
+void record_batch_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a, Workspace& ws, int B, double step, int records, bool with_O, RecordTimes* times = nullptr, cudaStream_t stream = 0, int sweeps_between = sweeps_between_records);
 
 struct IterStatsHost {
     std::vector<double> E_pool;

@@ -293,7 +293,7 @@ void record_one_walker(WalkerBatch& wb, const Ansatz& a, Workspace& ws, std::vec
 }
 
 // Take samples across walkers, sum net result
-void record_batch(WalkerBatch& wb, const Ansatz& a, double step, int records, ThreadPool* pool, std::vector<Workspace>& wss, std::vector<double>& E_pool, std::vector<double>& O_pool, std::vector<uint8_t>& valid_pool, BatchStats& bs) {
+void record_batch(WalkerBatch& wb, const Ansatz& a, double step, int records, ThreadPool* pool, std::vector<Workspace>& wss, std::vector<double>& E_pool, std::vector<double>& O_pool, std::vector<uint8_t>& valid_pool, BatchStats& bs, int sweeps_between) {
     int B = wb.B;
     int n_workers = (int)wss.size();
     std::size_t P = a.n_params();
@@ -313,7 +313,7 @@ void record_batch(WalkerBatch& wb, const Ansatz& a, double step, int records, Th
         // Sum across samples done by each worker, skip between steps
         for (int r = 0; r < records; r++) {
             for (int w = w0; w < w1; w++) {
-                for (int sweep = 0; sweep < sweeps_between_records; sweep++) {
+                for (int sweep = 0; sweep < sweeps_between; sweep++) {
                     sweep_one(wb, w, a, step, ws);
                     recenter_walker(&wb.x[(std::size_t)w * D]);
                 }

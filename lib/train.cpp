@@ -3,24 +3,27 @@
 #include "constants.h"
 #include "envelope.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 // Create a backend for training, either CPU or GPU depending on compile-time flags
-std::unique_ptr<Backend> make_cpu_backend(const Ansatz& a, bool training);
+std::unique_ptr<Backend> make_cpu_backend(const Ansatz& a, const RunConfig& cfg, bool training);
 #ifdef VMC_CUDA
-std::unique_ptr<Backend> make_gpu_backend(const Ansatz& a, bool training);
+std::unique_ptr<Backend> make_gpu_backend(const Ansatz& a, const RunConfig& cfg, bool training);
 #endif
 
-std::unique_ptr<Backend> make_backend(const Ansatz& a, bool training) {
+std::unique_ptr<Backend> make_backend(const Ansatz& a, const RunConfig& cfg, bool training) {
 #ifdef VMC_CUDA
-    return make_gpu_backend(a, training);
+    return make_gpu_backend(a, cfg, training);
 #else
-    return make_cpu_backend(a, training);
+    return make_cpu_backend(a, cfg, training);
 #endif
 }
 
@@ -66,6 +69,23 @@ static void csv_row(std::ostream& o, const IterLog& g) {
     o << "\n";
 }
 
+// Open training.csv, for fresh run i0 = 0 starts over, resumed run keeps rows before first iteration i0
+static std::ofstream open_csv(int i0) {
+    std::vector<std::string> keep;
+    if (i0 > 0) {
+        std::ifstream in("training.csv");
+        std::string line;
+        if (std::getline(in, line)) {
+            keep.push_back(line);   // header
+            while (std::getline(in, line)) if (!line.empty() && std::stoi(line) < i0) keep.push_back(line);   // a row starts with its step
+        }
+    }
+    std::ofstream csv("training.csv");
+    if (keep.empty()) csv_header(csv);
+    for (const std::string& l : keep) csv << l << "\n";
+    return csv;
+}
+
 // Write final results from BatchStats
 static void fill_observables(const BatchStats& bs, DescentResult& r) {
     r.El_exp = bs.E_sum / (double)bs.n_valid;
@@ -76,19 +96,23 @@ static void fill_observables(const BatchStats& bs, DescentResult& r) {
 }
 
 // Training step
-DescentResult train(Ansatz& a) {
+DescentResult train(Ansatz& a, const RunConfig& cfg, const CheckpointState& start) {
+    // First iteration of this run: 0, or where a resumed checkpoint stopped
+    const int i0 = start.iter;
+    if (i0 > 0 && i0 >= cfg.iterations()) throw std::runtime_error("train: the checkpoint is at iteration " + std::to_string(i0) + " of " + std::to_string(cfg.iterations()) + "; raise sr_iterations to continue");
+
     // Get parameter count and envelope parameter
     const std::size_t n_params = a.n_params(); 
     const std::size_t alpha_idx = n_params - n_params_env;
     
     // Initialize backend in training mode and thermalizing
-    std::unique_ptr<Backend> be = make_backend(a, true);
+    std::unique_ptr<Backend> be = make_backend(a, cfg, true);
     const std::size_t B = be->walkers();
     be->initial_thermalization(a);
     
     // Initialize statistics for checkpointing 
-    double best_E_ucb = std::numeric_limits<double>::infinity();
-    std::vector<double> r_rms_hist(diss_watch_window, 0.0);
+    double best_E_ucb = start.best_E_ucb;
+    std::vector<double> r_rms_hist(cfg.diss_window, 0.0);
     int hist_idx = 0;
     
     // Initialize training parameters and statistics structures
@@ -98,15 +122,19 @@ DescentResult train(Ansatz& a) {
     std::vector<double> delta(n_params, 0.0), grad(n_params, 0.0);
     SampleStats s;
 
+    // Training state stored with a checkpoint taken before the update of iteration `iter`
+    auto state_at = [&](int iter) { 
+        return CheckpointState{iter, cfg.sr.lambda(std::max(0, iter - cfg.gd_iterations)), best_E_ucb}; 
+    };
+
     // Initialize csv header
-    std::ofstream csv("training.csv");
-    csv_header(csv);
+    std::ofstream csv = open_csv(i0);
 
     // Training loop
-    for (int i = 0; i < N_descent; i++) {
+    for (int i = i0; i < cfg.iterations(); i++) {
         // Begin timer, record count, and sample size
         const auto t0 = std::chrono::steady_clock::now();
-        const int records_now = (i >= grow_at_iter) ? records_per_iter_max : records_per_iter;
+        const int records_now = (i >= cfg.grow_at_iter()) ? cfg.records_max() : cfg.records;
         const std::size_t n_samples = B * (std::size_t)records_now;
 
         // Sample, ;pg the observables and the clipped-energy gradient
@@ -115,48 +143,51 @@ DescentResult train(Ansatz& a) {
         r.spin_acceptance = s.spin_acceptance;
         r.tau_acceptance = s.tau_acceptance;
         fill_observables(s.bs, r);
-        const ClipStats clip = clip_stats(s.E_pool, s.valid_pool, n_samples, s.bs.n_valid);
+        const ClipStats clip = clip_stats(s.E_pool, s.valid_pool, n_samples, s.bs.n_valid, cfg.clip_mad);
         be->gradient(n_samples, s.bs.n_valid, clip);
         r.El_err = batch_error(s.bs);
 
         // Checkpoints: the lowest upper energy bound so far, and a periodic one
         const double E_ucb = r.El_exp + r.El_err;
-        if (i >= N_gd && E_ucb < best_E_ucb && r.El_exp < diss_threshold) {
+        if (i >= cfg.gd_iterations && E_ucb < best_E_ucb && r.El_exp < cfg.diss_threshold) {
             best_E_ucb = E_ucb;
-            save_checkpoint("best_checkpoint.txt", a);
+            save_checkpoint("best_checkpoint.txt", a, state_at(i));
         }
-        if ((i + 1) % ckpt_every == 0) save_checkpoint("periodic_checkpoint.txt", a);
-        if (i >= diss_watch_window) {
+        if ((i + 1) % cfg.ckpt_every == 0) save_checkpoint("periodic_checkpoint.txt", a, state_at(i));
+        if (i - i0 >= cfg.diss_window) {
+
             const double r_rms_past = r_rms_hist[hist_idx];
-            if (r.El_exp > diss_threshold && r.r_rms > r_rms_past * diss_growth_factor) {
+            if (r.El_exp > cfg.diss_threshold && r.r_rms > r_rms_past * cfg.diss_growth) {
                 std::cerr << "train: step " << i << " -- possible dissociation: E_exp="
-                          << r.El_exp << " > " << diss_threshold << ", r_rms " << r_rms_past
-                          << " -> " << r.r_rms << " over " << diss_watch_window << " steps.\n";
+                          << r.El_exp << " > " << cfg.diss_threshold << ", r_rms " << r_rms_past
+                          << " -> " << r.r_rms << " over " << cfg.diss_window << " steps.\n";
             }
         }
         r_rms_hist[hist_idx] = r.r_rms;
-        hist_idx = (hist_idx + 1) % diss_watch_window;
+        hist_idx = (hist_idx + 1) % cfg.diss_window;
 
         // Parameter update: ADAM warm-up, then SR (plus the optional Adam step for the envelope block)
         IterLog g;
-        if (i < N_gd) {
+        if (i < cfg.gd_iterations) {
             be->grad_to_host(0, n_params, grad.data());
-            ADAM(grad, m, v, i, a);
+            ADAM(grad, m, v, i - i0, a, cfg.adam);   // the moments start at zero in every run, so does their bias correction
         } else {
             const auto t_sr0 = std::chrono::steady_clock::now();
-            g.sr = be->sr_step(a, i - N_gd, n_samples, s.bs.n_valid, delta, g.rms_damp_mean, g.n_scalar_dl);
+            g.sr = be->sr_step(a, i - cfg.gd_iterations, n_samples, s.bs.n_valid, delta, g.rms_damp_mean, g.n_scalar_dl);
             
             // Optional ADAM training for envelope during SR
-            if (env_adam_lr > 0.0) {
+            if (cfg.adam.env_lr > 0.0) {
                 double ge[n_params_env];
                 be->grad_to_host(alpha_idx, n_params_env, ge);
-                const int t = i - N_gd + 1;
-                const double lr_t = env_adam_lr / (1.0 + (double)(t - 1) / env_adam_decay_it);
-                for (int q = env_adam_alpha ? 0 : 1; q < n_params_env; q++) {
-                    env_m[q] = beta1 * env_m[q] + (1.0 - beta1) * ge[q];
-                    env_v[q] = beta2 * env_v[q] + (1.0 - beta2) * ge[q] * ge[q];
-                    const double mh = env_m[q] / (1.0 - std::pow(beta1, t)), vh = env_v[q] / (1.0 - std::pow(beta2, t));
-                    a.add_to_param(alpha_idx + q, -lr_t * mh / (std::sqrt(vh) + 1e-8));
+                const int t = i - cfg.gd_iterations + 1;                  // SR step count: drives the lr decay
+                const int tb = i - std::max(cfg.gd_iterations, i0) + 1;   // steps since the moments started (a resume resets them)
+                const AdamSettings& ad = cfg.adam;
+                const double lr_t = ad.env_lr / (1.0 + (double)(t - 1) / ad.env_decay_it);
+                for (int q = ad.env_alpha ? 0 : 1; q < n_params_env; q++) {
+                    env_m[q] = ad.beta1 * env_m[q] + (1.0 - ad.beta1) * ge[q];
+                    env_v[q] = ad.beta2 * env_v[q] + (1.0 - ad.beta2) * ge[q] * ge[q];
+                    const double mh = env_m[q] / (1.0 - std::pow(ad.beta1, tb)), vh = env_v[q] / (1.0 - std::pow(ad.beta2, tb));
+                    a.add_to_param(alpha_idx + q, -lr_t * mh / (std::sqrt(vh) + ad.eps));
                 }
             }
 
@@ -178,12 +209,12 @@ DescentResult train(Ansatz& a) {
         csv.flush();
         
         // Print results
-        std::cout << (i < N_gd ? "ADAM|" : "SR|") << "Step: " << i << ": E_exp: " << r.El_exp << ", E_err: " << r.El_err
+        std::cout << (i < cfg.gd_iterations ? "ADAM|" : "SR|") << "Step: " << i << ": E_exp: " << r.El_exp << ", E_err: " << r.El_err
                   << ", var: " << r.var << ", acceptance: " << r.acceptance
                   << ", spin_acceptance: " << r.spin_acceptance << ", tau_acceptance: " << r.tau_acceptance
                   << ", r_rms: " << r.r_rms << ", node_hits: " << r.total_node_hits << ", ms/iter: " << g.ms
                   << ", alpha: " << g.alpha << ", grad_alpha: " << g.grad_alpha << ", L2: " << r.L2 << std::endl;
-        if (i >= N_gd) std::cout << "               lam: " << g.sr.lambda << ", cg: " << g.sr.cg_iters
+        if (i >= cfg.gd_iterations) std::cout << "               lam: " << g.sr.lambda << ", cg: " << g.sr.cg_iters
                                  << ", delta_alpha: " << g.delta_alpha << ", metro_ms: " << g.metro_ms
                                  << ", local_E_ms: " << g.local_E_ms << ", sr_ms: " << g.sr_ms << ", gpu_ms: " << g.gpu_ms;
         std::cout << std::endl << std::endl;
@@ -192,16 +223,16 @@ DescentResult train(Ansatz& a) {
         be->iteration_end(g.ms, i, records_now, n_params, "descent");
     }
     // Save checkpoint, end backend, return results
-    save_checkpoint("final_checkpoint.txt", a);
-    be->finish(records_per_iter, n_params, "descent run end");
+    save_checkpoint("final_checkpoint.txt", a, state_at(cfg.iterations()));
+    be->finish(cfg.records, n_params, "descent run end");
     return r;
 }
 
 
 // Energy of fixed parameters: eval_iters rounds of records_per_iter_max records, pooled per walker for the error bar
-DescentResult evaluate_frozen(Ansatz& a) {
+DescentResult evaluate_frozen(Ansatz& a, const RunConfig& cfg) {
     // Initialize backend 
-    std::unique_ptr<Backend> be = make_backend(a, false);
+    std::unique_ptr<Backend> be = make_backend(a, cfg, false);
     const std::size_t B = be->walkers();
     be->initial_thermalization(a);
     
@@ -216,9 +247,9 @@ DescentResult evaluate_frozen(Ansatz& a) {
     SampleStats s;
 
     // Sample and log iterations
-    for (int i = 0; i < eval_iters; i++) {
+    for (int i = 0; i < cfg.eval_iters; i++) {
         const auto t0 = std::chrono::steady_clock::now();
-        be->sample(a, records_per_iter_max, true, s);
+        be->sample(a, cfg.records_max(), true, s);
         acc_sum += s.acceptance;
         spin_acc_sum += s.spin_acceptance;
         tau_acc_sum += s.tau_acceptance;
@@ -232,14 +263,14 @@ DescentResult evaluate_frozen(Ansatz& a) {
             bs_all.Ew_sum[w] += s.bs.Ew_sum[w];
             bs_all.nw[w] += s.bs.nw[w];
         }
-        be->iteration_end(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), i, records_per_iter_max, a.n_params(), "frozen_eval");
+        be->iteration_end(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), i, cfg.records_max(), a.n_params(), "frozen_eval");
     }
-    be->finish(records_per_iter_max, a.n_params(), "frozen_eval");
+    be->finish(cfg.records_max(), a.n_params(), "frozen_eval");
 
     // Average everything
-    r.acceptance = acc_sum / eval_iters;
-    r.spin_acceptance = spin_acc_sum / eval_iters;
-    r.tau_acceptance = tau_acc_sum / eval_iters;
+    r.acceptance = acc_sum / cfg.eval_iters;
+    r.spin_acceptance = spin_acc_sum / cfg.eval_iters;
+    r.tau_acceptance = tau_acc_sum / cfg.eval_iters;
     r.El_exp = bs_all.E_sum / (double)bs_all.n_valid;
     r.L2 = bs_all.l2_sum / (double)bs_all.n_valid;
     r.var = std::max(0.0, bs_all.E2_sum / (double)bs_all.n_valid - r.El_exp * r.El_exp);
@@ -248,8 +279,8 @@ DescentResult evaluate_frozen(Ansatz& a) {
     r.total_node_hits = (double)bs_all.n_invalid;
 
     // Output results
-    const std::size_t samp_all = (std::size_t)eval_iters * B * (std::size_t)records_per_iter_max;
-    std::cout << "=== Frozen-parameter evaluation (" << eval_iters << " iterations, "
+    const std::size_t samp_all = (std::size_t)cfg.eval_iters * B * (std::size_t)cfg.records_max();
+    std::cout << "=== Frozen-parameter evaluation (" << cfg.eval_iters << " iterations, "
               << samp_all << " total samples, " << bs_all.n_valid << " valid) ===\n"
               << "E_exp: " << r.El_exp << " +/- " << r.El_err << ", var: " << r.var
               << ", r_rms: " << r.r_rms << ", L2: " << r.L2

@@ -16,11 +16,11 @@ void O_exp_device(cublasHandle_t h, const opool_t* O_pool, const double* m, std:
 void S_diag_device(const opool_t* O_pool, const unsigned char* valid, const double* O_exp, std::size_t Ns, std::size_t P, long long n_valid, double* S_diag, cudaStream_t stream = 0);
 
 
-double rms_update_device(cublasHandle_t h, const double* grad, double* v_rms, double* d_rms, std::size_t P, cudaStream_t stream = 0);
+double rms_update_device(cublasHandle_t h, const double* grad, double* v_rms, double* d_rms, std::size_t P, cudaStream_t stream = 0, double rms_beta = sr_rms_beta, double rms_eps = sr_rms_eps);
 
 void grad_device(cublasHandle_t h, const opool_t* O_pool, const double* E_pool, const unsigned char* valid, const double* O_exp, std::size_t Ns, std::size_t P, long long n_valid, const ClipStats& cs, double* E_clip, double* grad, cudaStream_t stream = 0);
 
-void M_inv_device(const double* S_diag, const double* d_rms, double lambda_t, double* M_inv, std::size_t P, cudaStream_t stream = 0);
+void M_inv_device(const double* S_diag, const double* d_rms, double lambda_t, double eps, double rms_eps, double* M_inv, std::size_t P, cudaStream_t stream = 0);
 
 using DeviceMatVec = std::function<void(const double* v, double* out)>;
 
@@ -42,7 +42,7 @@ void O_exp_replicas(const std::vector<ReplicaRef>& R, std::size_t P, long long n
 void grad_replicas(const std::vector<ReplicaRef>& R, std::size_t P, long long n_valid, const ClipStats& cs);
 
 // out = (S + regularisation) v over every replica's rows; v and out live on replica 0
-void sr_apply(const std::vector<ReplicaRef>& R, std::size_t P, long long n_valid, double lambda_diag, const double* v, double* out, bool raw, long long* n_scalar_downloads = nullptr);
+void sr_apply(const std::vector<ReplicaRef>& R, std::size_t P, long long n_valid, double lambda_diag, const double* v, double* out, bool raw, long long* n_scalar_downloads = nullptr, const SrSettings& sr = SrSettings{});
 
 // One SR step (CG solve, trust and norm caps, parameter update); returns the step's log
-SRStepLog SR_step_device(const std::vector<ReplicaRef>& R, Ansatz& a, int iter, long long n_valid, std::vector<double>& delta_host, long long* n_scalar_downloads = nullptr);
+SRStepLog SR_step_device(const std::vector<ReplicaRef>& R, Ansatz& a, int iter, long long n_valid, std::vector<double>& delta_host, long long* n_scalar_downloads = nullptr, const SrSettings& sr = SrSettings{});

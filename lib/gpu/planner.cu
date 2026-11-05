@@ -5,39 +5,19 @@
 
 #include <nvml.h>
 
-#include <cctype>
-#include <cerrno>
-#include <cmath>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
-#include <sstream>
 #include <stdexcept>
-#include <string>
 #include <thread>
 
-// Each process has name call environment variable, this function maps the name to double via atof (ASCII to float), if it exists. Thus "1.0" becomes 1.0. Otherwise return the default def. Returns zero for a non number string
-static double env_d(const char* name, double def) {
-    const char* e = std::getenv(name);
-    // Return default if nothing provided during comple command
-    if (!e || !*e) return def;
-    char* end = nullptr;
-    errno = 0;
-    const double v = std::strtod(e, &end);
-    while (*end && std::isspace((unsigned char)*end)) end++;   
-    // If not a number that is passed throw an error (e.g 0,5 instead of 0.5)
-    if (end == e || *end != '\0' || errno == ERANGE || !std::isfinite(v))
-        throw std::runtime_error(std::string("GPU planner: ") + name + "=\"" + e + "\" is not a number");
-    return v;
-}
 
 // Get total needed byte count for ansatz and amount of walkers
-std::size_t arena_bytes_for(const Ansatz& a, std::size_t B) {
+std::size_t arena_bytes_for(const Ansatz& a, std::size_t B, int records_max) {
     g_dry_alloc = true;
     std::size_t total = 0;
     try {
-        DeviceState ds(a, false, B);
+        DeviceState ds(a, false, B, records_max);
         ds.allocate(a, true, false);
         total = ds.allocated_bytes();
     } catch (...) { 
@@ -63,13 +43,13 @@ static unsigned gpu_percent_util(int dev) {
     return mx;
 }
 
-std::vector<GpuPlan> plan_gpus(const Ansatz& a) {
-    const double GiB = 1024.0 * 1024.0 * 1024.0; // A GiB of bytes
-    const double overhead = env_d("VMC_GPU_OVERHEAD_GB", 0.4), margin = env_d("VMC_GPU_MARGIN_GB", 0.5);  // Overhead for non arena memory, margin is in case of incorrect estimate or anything else we don't accidentally run out of memory
-    const unsigned max_util = (unsigned)env_d("VMC_GPU_MAX_UTIL", 30.0);  // Maximum utilization (def is 30%) of a GPU before using another one
-    const std::size_t cap = (std::size_t)env_d("VMC_MAX_WALKERS_PER_GPU", 0.0);  // Optional cap on number of walkers per GPU, by default put 0 as in no cap
-    const std::size_t B_min = (std::size_t)env_d("VMC_MIN_WALKERS", 256.0);  // If GPU has less that a threshold amount of walkers allocated by the end its not worth using, it takes more time to bus the information back and forth
-    const std::size_t step = 32;  // Round walker counts to multiples of 32, use 32 as GPU launches in lockstep 32 parallel threads called a warp
+std::vector<GpuPlan> plan_gpus(const Ansatz& a, int records_max, const GpuSettings& gs) {
+    const double GiB = 1024.0 * 1024.0 * 1024.0;                    // A GiB of bytes
+    const double overhead = gs.overhead_gb, margin = gs.margin_gb;  // Overhead for non arena memory, margin is in case of incorrect estimate or anything else we don't accidentally run out of memory
+    const unsigned max_util = (unsigned)gs.max_util;                // Maximum utilization (def is 30%) of a GPU before using another one
+    const std::size_t cap = (std::size_t)gs.max_walkers;            // Optional cap on number of walkers per GPU, by default put 0 as in no cap
+    const std::size_t B_min = (std::size_t)gs.min_walkers;          // If GPU has less that a threshold amount of walkers allocated by the end its not worth using, it takes more time to bus the information back and forth
+    const std::size_t step = 32;                                    // Round walker counts to multiples of 32, use 32 as GPU launches in lockstep 32 parallel threads called a warp
 
     // Start NVML checking GPU telemetry, then count stores how many available GPUs
     const bool nvml_ok = nvmlInit_v2() == NVML_SUCCESS;
@@ -98,13 +78,13 @@ std::vector<GpuPlan> plan_gpus(const Ansatz& a) {
         }
         // Look at number of walkers that we can maximally fit for the ansatz while staying withing budget and also hi is beneath a certain absolute limit (4,194,304 walkers denoted by 1u << 22)
         std::size_t lo = 0, hi = step;
-        while ((double)arena_bytes_for(a, hi) <= budget && hi < (1u << 22)) { 
+        while ((double)arena_bytes_for(a, hi, records_max) <= budget && hi < (1u << 22)) { 
             lo = hi; hi *= 2; 
         }
         // We now have the range of walkers we can fit bounded by a single of power 2. We can now narrow it down to a single warp. Do a binary search , if mid is within budget make it the lower bound. Else the higher bound. Walker allocation always a multiple of step in the end
         while (hi - lo > step) {
             const std::size_t mid = ((lo + hi) / 2 / step) * step;
-            if ((double)arena_bytes_for(a, mid) <= budget) lo = mid; 
+            if ((double)arena_bytes_for(a, mid, records_max) <= budget) lo = mid; 
             else hi = mid;
         }
         // If there is a cap and the lower bound is above it, set the lo to cap
@@ -116,14 +96,14 @@ std::vector<GpuPlan> plan_gpus(const Ansatz& a) {
         }
         // We assign lo amount of walkers to g.B and the amount of data we need to g.need_gb. Print amount per device and add to the plan
         g.B = lo;
-        g.need_gib = (double)arena_bytes_for(a, lo) / GiB;
+        g.need_gib = (double)arena_bytes_for(a, lo, records_max) / GiB;
         std::printf("  GPU%d: %.2f GiB free, %u%% busy -> %zu walkers (arena %.2f GiB)\n", d, g.free_gib, g.util, g.B, g.need_gib);
         plan.push_back(g);
     }
 
     // Now we do shutdown of telemetry reading (if succesfully launched), if empty throw error meaning not enough space. Set maximum amount of device allocations to first two (which in our case is all of them)
     if (nvml_ok) nvmlShutdown();
-    if (plan.empty()) throw std::runtime_error("GPU planner: no device can hold VMC_MIN_WALKERS walkers");
+    if (plan.empty()) throw std::runtime_error("GPU planner: no device can hold min_walkers walkers");
     if (plan.size() > 2) plan.resize(2);
     // Now set active GPU to first device approved by plan
     CUDA_CHECK(cudaSetDevice(plan[0].dev));

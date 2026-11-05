@@ -20,26 +20,28 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORK = os.path.join(REPO, "build-golden")
 REF = os.path.join(REPO, "tests", "golden")
 
-SHORT = {"N_descent": "10", 
-         "walker_per_th": "32",
-         "therm_steps_init": "5",
-         "ckpt_every": "10", 
-         "eval_iters": "5", 
-         "diss_threshold": "1e9"
-        }
+# The short run every setup shares
+GOLDEN_RUN = """[training]
+sr_iterations = 10
+therm_init = 5
+ckpt_every = 10
+eval_iters = 5
+diss_threshold = 1e9
+"""
 
-BUILDS = {
-    "cpu":     (False, {}),
-    "cuda":    (True,  {}),
-    "envadam": (True,  {"env_adam_lr": "0.01"}),
-}
+# The one compile-time override: n_walkers = n_thread * walker_per_th is the default walker count, and it also sizes
+# the GPU jet and exchange chunks (layouts.h), which set how mg1's 1280 walkers are split
+BUILD_CONSTANTS = {"walker_per_th": "32"}
 
+BUILDS = {"cpu": False, "cuda": True}   # build name -> CUDA on
+
+# setup -> (build, GPUs, run-file lines added to GOLDEN_RUN)
 SETUPS = {
-    "cpu":     ("cpu",     0, {}),
-    "gpu1":    ("cuda",    1, {}),
-    "mg1":     ("cuda",    1, {"VMC_GPUS": "auto", "VMC_MAX_WALKERS_PER_GPU": "1280", "VMC_GPU_MAX_UTIL": "100"}),
-    "gpu2":    ("cuda",    2, {"VMC_NGPU": "2"}),
-    "envadam": ("envadam", 1, {}),
+    "cpu":     ("cpu",  0, ""),
+    "gpu1":    ("cuda", 1, ""),
+    "mg1":     ("cuda", 1, "[gpu]\ngpus = auto\nmax_walkers = 1280\nmax_util = 100\n"),
+    "gpu2":    ("cuda", 2, "[gpu]\ngpus = 0,1\n"),
+    "envadam": ("cuda", 1, "[adam]\nenv_lr = 0.01\n"),
 }
 
 SKIP_COLS = re.compile(r"(_ms$|^ms_|^bytes_|^n_scalar_dl$)")   
@@ -52,14 +54,14 @@ def sh(cmd, **kw):
     return r.stdout
 
 def build(name):
-    cuda, extra = BUILDS[name]
+    cuda = BUILDS[name]
     src = os.path.join(WORK, name)
     shutil.rmtree(src, ignore_errors=True)
     keep = ("lib", "tests", "tools", "main.cpp", "CMakeLists.txt")
     shutil.copytree(REPO, src, ignore=lambda d, names: [n for n in names if d == REPO and n not in keep])
     path = os.path.join(src, "lib", "constants.h")
     text = open(path).read()
-    for key, val in {**SHORT, **extra}.items():
+    for key, val in BUILD_CONSTANTS.items():
         text, n = re.subn(r"(inline constexpr [\w: ]+?\b%s\s*=\s*)[^;]+;" % key,
                           lambda m: m.group(1) + val + ";", text)
         if n != 1:
@@ -76,22 +78,23 @@ def gpu_state():
     return {int(i): (int(u), int(m)) for i, u, m in (l.split(",") for l in out.strip().splitlines())}
 
 def run(name, bdir, gpus):
-    _, ngpu, env = SETUPS[name]
+    _, ngpu, ini = SETUPS[name]
     d = os.path.join(WORK, "runs", name)
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(os.path.join(d, "feval"))
+    run_ini = os.path.join(d, "run.ini")
+    open(run_ini, "w").write(GOLDEN_RUN + ini)
     e = {k: v for k, v in os.environ.items() if not k.startswith("VMC_")}  
-    e.update(env)
     if ngpu:
         e["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpus[:ngpu])
     print(f"  running {name} ...", flush=True)
     with open(os.path.join(d, "run.log"), "w") as log:
-        subprocess.run([os.path.join(bdir, "main")], cwd=d, env=e, stdout=log, stderr=subprocess.STDOUT)
+        subprocess.run([os.path.join(bdir, "main"), run_ini], cwd=d, env=e, stdout=log, stderr=subprocess.STDOUT)
     if not os.path.exists(os.path.join(d, "final_checkpoint.txt")):
         sys.exit(f"golden: {name} produced no final_checkpoint.txt, see {d}/run.log")
     shutil.copy(os.path.join(d, "final_checkpoint.txt"), os.path.join(d, "feval", "final_checkpoint.txt"))
     with open(os.path.join(d, "feval", "frozen.log"), "w") as log:
-        subprocess.run([os.path.join(bdir, "frozen_eval"), "final_checkpoint.txt"], cwd=os.path.join(d, "feval"),
+        subprocess.run([os.path.join(bdir, "frozen_eval"), "final_checkpoint.txt", run_ini], cwd=os.path.join(d, "feval"),
                        env=e, stdout=log, stderr=subprocess.STDOUT)
     return d
 

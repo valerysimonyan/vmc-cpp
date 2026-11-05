@@ -10,33 +10,37 @@
 #include "lib/constants.h"
 #include "lib/network.h"
 
+// ./main [run.ini]  -- the run file is optional; every setting it leaves out keeps its default (constants.h)
+int main(int argc, char** argv) {
+    if (argc > 2) { std::cerr << "usage: main [run.ini]\n"; return 2; }
+    const RunConfig cfg = load_run_config(argc == 2 ? argv[1] : nullptr);
+    {
+        std::ofstream out("run_config.ini");   // the resolved settings, so this run directory records how it was made
+        write_run_config(out, cfg);
+    }
+    std::cout << "=== Run settings" << (argc == 2 ? std::string(" (") + argv[1] + ")" : std::string(" (defaults)")) << " ===\n";
+    write_run_config(std::cout, cfg);
 
+    Ansatz ansatz(cfg.h_hidden, cfg.rho_hidden, cfg.orb_hidden, Activation::Gelu);
+    validate_config(ansatz, cfg);
 
-int main() {
-    Ansatz ansatz({32}, {32}, {32}, Activation::Gelu);
-    validate_config(ansatz);
-
-    if (resume) {
-        std::ifstream probe("best_checkpoint.txt");
-        if (probe.good()) {
-            probe.close();
-            load_checkpoint("best_checkpoint.txt", ansatz);
-            std::cout << "Resumed from best_checkpoint.txt\n";
-        } else {
-            std::cout << "resume=true but best_checkpoint.txt not found -- starting fresh.\n";
-        }
-    } else if (std::string(transfer_from) != "") {
-        load_transfer(transfer_from, ansatz);
+    CheckpointState start;
+    if (!cfg.resume.empty()) {
+        start = load_checkpoint(cfg.resume, ansatz);
+        std::cout << "Resumed from " << cfg.resume << " at iteration " << start.iter << " (lambda " << start.lambda << ")\n";
+    } else if (!cfg.transfer.empty()) {
+        load_transfer(cfg.transfer, ansatz);
     }
 
-    DescentResult result = train(ansatz);   
+    DescentResult result = train(ansatz, cfg, start);
 
     std::cout << "Final E_loc: " << result.El_exp << std::endl;
-    std::cout << "Final error: " << result.El_err << std::endl; 
-    std::cout << "Final variance: " << result.var << std::endl; 
+    std::cout << "Final error: " << result.El_err << std::endl;
+    std::cout << "Final variance: " << result.var << std::endl;
     std::cout << "Final acceptance: " << result.acceptance << std::endl;
 
-    DescentResult eval = evaluate_frozen(ansatz);
+    // Evaluate the final parameters (the "best" checkpoint tends to be a lucky early iteration)
+    DescentResult eval = evaluate_frozen(ansatz, cfg);
 
     std::cout << "Frozen-eval E: " << eval.El_exp << " +/- " << eval.El_err
               << ", var: " << eval.var << ", r_rms: " << eval.r_rms << std::endl;

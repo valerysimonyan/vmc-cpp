@@ -38,7 +38,7 @@ __global__ void walker_stats_kernel(const real* __restrict__ E_loc, const real* 
 }
 
 // Log observables
-void record_batch_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a, Workspace& ws, int B, double step, int records, bool with_O, RecordTimes* times, cudaStream_t stream) {
+void record_batch_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a, Workspace& ws, int B, double step, int records, bool with_O, RecordTimes* times, cudaStream_t stream, int sweeps_between) {
     using clk = std::chrono::steady_clock;
     auto ms_since = [](clk::time_point t0) { return std::chrono::duration<double, std::milli>(clk::now() - t0).count(); };
     RecordTimes tm;
@@ -50,7 +50,7 @@ void record_batch_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a
         auto t0 = clk::now();
         {
             VMC_PROF("/record_sweeps", stream);
-            for (int sweep = 0; sweep < sweeps_between_records; sweep++) {
+            for (int sweep = 0; sweep < sweeps_between; sweep++) {
                 sweep_device(ds, handle, B, step, stream);
                 recenter_device(ds, B, stream);
             }

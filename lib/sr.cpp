@@ -5,7 +5,7 @@
 #include <cmath>
 
 // Clip energies
-ClipStats clip_stats(const std::vector<double>& E_pool, const std::vector<unsigned char>& valid_pool, std::size_t n_samples, long long n_valid) {
+ClipStats clip_stats(const std::vector<double>& E_pool, const std::vector<unsigned char>& valid_pool, std::size_t n_samples, long long n_valid, double clip_mad) {
     std::vector<double> E_valid;
     E_valid.reserve(n_samples);
     for (std::size_t i = 0; i < n_samples; i++) {
@@ -34,7 +34,7 @@ ClipStats clip_stats(const std::vector<double>& E_pool, const std::vector<unsign
     return {clip_lo, clip_hi, E_clip_sum / (double)n_valid};
 }
 
-void SROp::init(const std::vector<double>& O_pool_, const std::vector<double>& O_exp_, std::size_t Ns_, std::size_t P_, double lambda_diag_, double eps_abs_, ThreadPool* pool_, const double* d_rms_, const uint8_t* valid_, std::size_t n_valid_) {
+void SROp::init(const std::vector<double>& O_pool_, const std::vector<double>& O_exp_, std::size_t Ns_, std::size_t P_, double lambda_diag_, double eps_abs_, ThreadPool* pool_, const double* d_rms_, const uint8_t* valid_, std::size_t n_valid_, double rms_eps_) {
     // Do not copy the vector contain invdividual samples and averages of O_i = dlog psi _ dtheta_i
     O_pool = &O_pool_;
     O_exp = &O_exp_;
@@ -43,6 +43,7 @@ void SROp::init(const std::vector<double>& O_pool_, const std::vector<double>& O
     P = P_;
     lambda_diag = lambda_diag_;
     eps_abs = eps_abs_;
+    rms_eps = rms_eps_;
     pool = pool_;
     d_rms = d_rms_;
     valid = valid_;
@@ -110,9 +111,7 @@ void SROp::apply(const std::vector<double>& v, std::vector<double>& out, bool ra
         if (!raw) {
             out[i] += lambda_diag * S_diag[i] * v[i];
             double damp = eps_abs;
-            if constexpr (sr_rms_damp) {
-                damp += sr_rms_eps * d_rms[i];
-            }
+            damp += rms_eps * d_rms[i];
             out[i] += damp * v[i];
         }
     }

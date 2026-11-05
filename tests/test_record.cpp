@@ -246,7 +246,7 @@ static void test_srop_mask() {
         ref_out[j] /= (double)n_valid;
         ref_out[j] += lambda * ref_S[j] * v[j];
         double damp = eps_abs;
-        if constexpr (sr_rms_damp) damp += sr_rms_eps * d_rms[j];
+        damp += sr_rms_eps * d_rms[j];
         ref_out[j] += damp * v[j];
     }
     for (std::size_t j = 0; j < P; j++) CHECK(std::fabs(out[j]-ref_out[j]) < 1e-12, "SROp mask: apply()[" + std::to_string(j) + "] mismatch");

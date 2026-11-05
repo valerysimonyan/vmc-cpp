@@ -55,7 +55,7 @@ inline constexpr bool nuc_3N = true;  // 3N force switch
 // Monte Carlo parameters
 inline constexpr int therm_steps_init = 500;    // Thermalization steps upon initialization
 inline constexpr int therm_init_blocks = 20;    // Initial thermalization is split into this many blocks, tune acceptance at end of each block
-inline constexpr double batch_grow_frac = 0.7;  // of N_descent
+inline constexpr double batch_grow_frac = 0.7;  // of all iterations (N_gd + N_sr)
 inline constexpr int batch_grow_factor = 2;     // Maximum batch growth
 inline constexpr int draws = N*dim;             // Number of times we draw a position in a Metropolis update before recording a sample
 inline constexpr int spin_draws = N;            // Number of times we draw a spin in a Metropolis update before recording a sample
@@ -109,9 +109,7 @@ inline constexpr bool env_adam_alpha = false;       // false: Adam on the Jastro
 // Total Descent Parameters
 inline constexpr int N_gd = 0;                 // Number of ADAM steps
 inline constexpr int N_sr = 2e3;               // Number of SR steps
-inline constexpr int N_descent = N_gd + N_sr;  // Total step count
 inline constexpr double clip_mad = 5.0;        // Clipping parameter for gradient
-inline constexpr int grow_at_iter = (int)(batch_grow_frac * N_descent);
 
 // ADAM descent parameters
 inline constexpr double lr = 0.075;
@@ -121,6 +119,7 @@ inline constexpr double eps = 1e-8;
 
 // SR descent parameters
 inline constexpr double sr_eta        = 0.10;   // Initial learning rate
+inline constexpr double sr_lr_decay   = 0.999;  // Decay rate of learning rate
 inline constexpr double sr_lambda0    = 100.0;  // Initial lambda (added weight to diagonal elements)
 inline constexpr double sr_lambda_min = 0.4;    // Minimum lambda
 inline constexpr double sr_rho        = 0.995;  // Decay rate of lambda 
@@ -131,7 +130,6 @@ inline constexpr double sr_trust_r2   = 0.1;    // Bound for CG solution to (del
 inline constexpr double sr_delta_max  = 75.0;   // Maximum size on SR step
 
 // Further inverse stabilizers
-inline constexpr bool sr_rms_damp = true;    // Add RMS damping to stabilize inversion
 inline constexpr double sr_rms_beta = 0.99;  // Parameter which decays and stabilizes inversion
 inline constexpr double sr_rms_eps = 1e-3;   // Regulator we add the SR matrix
 
@@ -155,12 +153,8 @@ inline constexpr bool fp32_forward = true;
 inline constexpr bool fp32_opool   = true;
 inline constexpr double psi_mismatch_tol = fp32_forward ? 1e-4 : 1e-6;
 
-// 
+// How many rows before passing between host and device
 inline constexpr int opool_stage_rows = 1024;
-
-// Transfer Learning Settings
-inline constexpr bool resume = false;             // Load best_checkpoint.txt at startup if present
-inline constexpr const char* transfer_from = "";  // Path to a source checkpoint; empty = disabled
 
 // Numerical floors for pivot/determinant and for nodes of psi
 inline constexpr double det_floor = 1e-300;

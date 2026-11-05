@@ -111,7 +111,7 @@ static void storage_checks(DeviceState& ds, cublasHandle_t h, const Ansatz& a, W
         std::vector<double> d_rms(P, 1.0);
         SROp op; op.init(O, Oexp, Ns, P, sr_lambda_min, sr_eps, &tp, d_rms.data(), vp.data(), nv);
         std::vector<double> Minv(P);
-        for (std::size_t j = 0; j < P; j++) Minv[j] = 1.0 / (op.S_diag[j] * (1.0 + sr_lambda_min) + sr_eps + (sr_rms_damp ? sr_rms_eps : 0.0));
+        for (std::size_t j = 0; j < P; j++) Minv[j] = 1.0 / (op.S_diag[j] * (1.0 + sr_lambda_min) + sr_eps + sr_rms_eps);
         delta.assign(P, 0.0);
         auto mv = [&](const std::vector<double>& x, std::vector<double>& y) { op.apply(x, y); };
         return cg_solve(mv, grad, delta, Minv, 1e-10, 20000);

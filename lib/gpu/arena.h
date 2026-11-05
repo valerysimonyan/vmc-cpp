@@ -133,7 +133,7 @@ struct DeviceState {
     DeviceArray<unsigned char> pack_d;               // Ns_max*9 + B*60 bytes
 
     DeviceNet h_net_d, rho_net_d, orb_net_d;
-    explicit DeviceState(const Ansatz& a, bool verbose = true, std::size_t B_walkers = 0);
+    explicit DeviceState(const Ansatz& a, bool verbose = true, std::size_t B_walkers = 0, int records_max = records_per_iter_max);
 
     // --- Allocate memory for the various device arrays, with optional verbose output --- //
     std::size_t total_bytes() const;

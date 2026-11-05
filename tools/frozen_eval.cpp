@@ -33,11 +33,12 @@ static std::vector<int> ckpt_hidden(const char* path, const char* name) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) { std::cerr << "usage: frozen_eval <checkpoint>\n"; return 2; }
+    if (argc < 2 || argc > 3) { std::cerr << "usage: frozen_eval <checkpoint> [run.ini]\n"; return 2; }
+    const RunConfig cfg = load_run_config(argc == 3 ? argv[2] : nullptr);   // walkers, eval_iters, ...; the widths come from the checkpoint
     Ansatz a(ckpt_hidden(argv[1], "h_net"), ckpt_hidden(argv[1], "rho_net"), ckpt_hidden(argv[1], "orb_net"), Activation::Gelu);
     load_checkpoint(argv[1], a);
 
-    const DescentResult r = evaluate_frozen(a);
+    const DescentResult r = evaluate_frozen(a, cfg);
     std::printf("FROZEN %s E %.6f err %.6f var %.4f r_rms %.5f L2 %.5f node_hits %.0f\n",
 #ifdef VMC_CUDA
                 "gpu",

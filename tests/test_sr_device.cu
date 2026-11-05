@@ -240,7 +240,7 @@ static void test_sr_real(cublasHandle_t h, ThreadPool& pool, std::vector<Workspa
     SROp hop; hop.init(O_h, Oexp_c, Ns, P, lambda_t, sr_eps, &pool, d_rms.data(), V_h.data(), nv);
     std::vector<double> Minv_h(P);
     for (std::size_t j = 0; j < P; j++) {
-        double dd = sr_eps; if constexpr (sr_rms_damp) dd += sr_rms_eps * d_rms[j];
+        double dd = sr_eps; dd += sr_rms_eps * d_rms[j];
         Minv_h[j] = 1.0 / (hop.S_diag[j] * (1.0 + lambda_t) + dd);
     }
     auto host_mv = [&](const std::vector<double>& vv, std::vector<double>& out) { hop.apply(vv, out); };
@@ -302,7 +302,7 @@ int main() {
     if (cublasCreate(&h) != CUBLAS_STATUS_SUCCESS) { std::cerr << "cublasCreate failed\n"; return 1; }
     ThreadPool pool(n_thread);
     std::vector<Workspace> wss(n_thread);
-    std::printf("  sr_rms_damp = %s\n", sr_rms_damp ? "true" : "false");
+    std::printf("  sr_rms_eps = %g\n", sr_rms_eps);
     try {
         test_statistics(h, pool);
         test_cg_synthetic(h);

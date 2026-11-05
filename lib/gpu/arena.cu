@@ -39,11 +39,11 @@ static void check_backprop_layout(const Ansatz& a, const DeviceNet& dn, const Ne
     (void)a;
 }
 
-DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers) {
+DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers, int records_max) {
     B = B_walkers ? B_walkers : (std::size_t)n_walkers;
     soft_cap = (B_walkers == 0);
     P = a.n_params();
-    Ns_max = B * (std::size_t)records_per_iter_max;
+    Ns_max = B * (std::size_t)records_max;
     rows_max = B * (std::size_t)N * (std::size_t)rows_per_combo;
     ex_w = (int)(rows_max / (std::size_t)(ex_types * ex_npairs));
 
@@ -65,7 +65,7 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers) {
         oss << "DeviceState: O_pool would need " << o_pool_gb << " GiB, over the "
             << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).\n"
             << "  Ns_max = " << Ns_max << "  (walkers " << B
-            << " x records_per_iter_max " << records_per_iter_max << "), P = " << P
+            << " x records_max " << records_max << "), P = " << P
             << ".\n  Reduce walker_per_th, records_per_iter, or the network widths.";
         throw std::runtime_error(oss.str());
     }

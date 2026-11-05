@@ -48,7 +48,7 @@ struct BatchStats {
 
 void record_one_walker(WalkerBatch& wb, const Ansatz& a, Workspace& ws, std::vector<double>& O, int w, int r, std::vector<double>& E_pool, std::vector<double>& O_pool, std::vector<uint8_t>& valid_pool, BatchStats& bs);
 
-void record_batch(WalkerBatch& wb, const Ansatz& a, double step, int records, ThreadPool* pool, std::vector<Workspace>& wss, std::vector<double>& E_pool, std::vector<double>& O_pool, std::vector<uint8_t>& valid_pool, BatchStats& bs);
+void record_batch(WalkerBatch& wb, const Ansatz& a, double step, int records, ThreadPool* pool, std::vector<Workspace>& wss, std::vector<double>& E_pool, std::vector<double>& O_pool, std::vector<uint8_t>& valid_pool, BatchStats& bs, int sweeps_between = sweeps_between_records);
 
 double batch_error(const BatchStats& bs);
 

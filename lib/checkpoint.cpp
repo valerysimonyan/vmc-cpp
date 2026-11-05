@@ -90,11 +90,31 @@ static void read_jastrow(std::ifstream& f, Ansatz& a) {
     }
 }
 
+// Read header extracting state of training parameters, including iteration number, lambda, and best E_ucb
+static CheckpointState read_header(std::ifstream& f, const std::string& path, const char* who) {
+    std::string header;
+    std::getline(f, header);
+    CheckpointState st;
+    // v1 has no header so return default state, v2 had header with training state
+    if (header == "CHECKPOINT v1") return st; 
+    if (header != "CHECKPOINT v2") throw std::runtime_error(std::string(who) + "(" + path + "): unrecognized header '" + header + "'");
+    // String holding training params
+    std::string tag, k_iter, k_lambda, k_best, v_lambda, v_best;
+    // If header format is wrong, throw error
+    if (!(f >> tag >> k_iter >> st.iter >> k_lambda >> v_lambda >> k_best >> v_best) || tag != "state" || k_iter != "iter" || k_lambda != "lambda" || k_best != "best_E_ucb") throw std::runtime_error(std::string(who) + "(" + path + "): malformed state line");
+    
+    // Write to state then return
+    st.lambda = std::stod(v_lambda);
+    st.best_E_ucb = std::stod(v_best);
+    return st;
+}
+
 // Save parameters to file for full psi
-void save_checkpoint(const std::string& path, const Ansatz& a) {
+void save_checkpoint(const std::string& path, const Ansatz& a, const CheckpointState& st) {
     std::ofstream f(path);
     if (!f) throw std::runtime_error("save_checkpoint: cannot open " + path);
-    f << "CHECKPOINT v1\n";
+    f << "CHECKPOINT v2\n";
+    f << std::setprecision(17) << "state iter " << st.iter << " lambda " << st.lambda << " best_E_ucb " << st.best_E_ucb << "\n";
 
     write_network(f, "h_net", a.h_net);
     write_network(f, "rho_net", a.rho_net);
@@ -109,13 +129,11 @@ void save_checkpoint(const std::string& path, const Ansatz& a) {
 }
 
 // Load parameters to file for full psi
-void load_checkpoint(const std::string& path, Ansatz& a) {
+CheckpointState load_checkpoint(const std::string& path, Ansatz& a) {
     std::ifstream f(path);
     if (!f) throw std::runtime_error("load_checkpoint: cannot open " + path);
-    std::string header;
-    std::getline(f, header);
-    if (header != "CHECKPOINT v1") throw std::runtime_error("load_checkpoint(" + path + "): unrecognized header '" + header + "'");
-    
+    const CheckpointState st = read_header(f, path, "load_checkpoint");
+
     read_network(f, "h_net", a.h_net, path);
     read_network(f, "rho_net", a.rho_net, path);
     read_network(f, "orb_net", a.orb_net, path);
@@ -124,15 +142,14 @@ void load_checkpoint(const std::string& path, Ansatz& a) {
     f >> tag >> a.alpha;
     if (tag != "alpha") throw std::runtime_error("load_checkpoint(" + path + "): expected 'alpha', found '" + tag + "'");
     read_jastrow(f, a);
+    return st;
 }
 
 // Load transfer code
 void load_transfer(const std::string& path, Ansatz& a) {
     std::ifstream f(path);
     if (!f) throw std::runtime_error("load_transfer: cannot open " + path);
-    std::string header;
-    std::getline(f, header);
-    if (header != "CHECKPOINT v1") throw std::runtime_error("load_transfer(" + path + "): unrecognized header '" + header + "'");
+    read_header(f, path, "load_transfer");   // a transfer starts a new run: the state is not used
 
     // Widths of these networks outputs do not depend on particle number by construction
     read_network(f, "h_net", a.h_net, path);

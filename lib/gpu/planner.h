@@ -1,5 +1,8 @@
 #pragma once
 
+#include "../constants.h"
+#include "../config.h"
+
 #include <cstddef>
 #include <vector>
 
@@ -13,6 +16,6 @@ struct GpuPlan{
     unsigned util = 0;    // GPU utilisation (%) at time of planning
 };
 
-std::size_t arena_bytes_for(const Ansatz& a, std::size_t B);
+std::size_t arena_bytes_for(const Ansatz& a, std::size_t B, int records_max = records_per_iter_max);
 
-std::vector<GpuPlan> plan_gpus(const Ansatz& a);
+std::vector<GpuPlan> plan_gpus(const Ansatz& a, int records_max, const GpuSettings& gs);

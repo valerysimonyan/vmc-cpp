@@ -143,20 +143,20 @@ void S_diag_device(const opool_t* O_pool, const unsigned char* valid, const doub
 }
 
 // Evalutate regulators from Argonne paper for SR gradient descent
-__global__ void rms_kernel(const double* __restrict__ g, double* __restrict__ v, double* __restrict__ d, std::size_t P) {
+__global__ void rms_kernel(const double* __restrict__ g, double* __restrict__ v, double* __restrict__ d, double beta, std::size_t P) {
     std::size_t k = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= P) return;
-    v[k] = sr_rms_beta * v[k] + (1.0 - sr_rms_beta) * g[k] * g[k];
+    v[k] = beta * v[k] + (1.0 - beta) * g[k] * g[k];
     d[k] = sqrt(v[k]) + 1e-8;
 }
 
-double rms_update_device(cublasHandle_t h, const double* grad, double* v_rms, double* d_rms, std::size_t P, cudaStream_t stream) {
-    rms_kernel<<<blocks_for(P), T256, 0, stream>>>(grad, v_rms, d_rms, P);
+double rms_update_device(cublasHandle_t h, const double* grad, double* v_rms, double* d_rms, std::size_t P, cudaStream_t stream, double rms_beta, double rms_eps) {
+    rms_kernel<<<blocks_for(P), T256, 0, stream>>>(grad, v_rms, d_rms, rms_beta, P);
     cuda_sync_check("rms_update_device");
     cublasSetStream(h, stream);
     double asum = 0.0;
     check_blas(cublasDasum(h, (int)P, d_rms, 1, &asum), "rms_update_device");
-    return sr_rms_eps * asum / (double)P;
+    return rms_eps * asum / (double)P;
 }
 
 
@@ -191,16 +191,14 @@ __global__ void center_kernel(double* __restrict__ t, const double* __restrict__
 }
 
 // Apply SR regulators
-__global__ void apply_tail_kernel(double* __restrict__ out, const double* __restrict__ v, const double* __restrict__ S_diag, const double* __restrict__ d_rms, double nv, double lambda_diag, double eps_abs, bool raw, std::size_t P) {
+__global__ void apply_tail_kernel(double* __restrict__ out, const double* __restrict__ v, const double* __restrict__ S_diag, const double* __restrict__ d_rms, double nv, double lambda_diag, double eps_abs, double rms_eps, bool raw, std::size_t P) {
     std::size_t i = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= P) return;
     out[i] = out[i] / nv;
     if (!raw) {
         out[i] += lambda_diag * S_diag[i] * v[i];
         double damp = eps_abs;
-        if constexpr (sr_rms_damp) {
-            damp += sr_rms_eps * d_rms[i];
-        }
+        damp += rms_eps * d_rms[i];
         out[i] += damp * v[i];
     }
 }
@@ -268,18 +266,16 @@ CGResult cg_solve_device(cublasHandle_t h, const DeviceMatVec& matvec, const dou
 }
 
 // M_inv_diag[j] = 1.0 / (S_diag[j] * (1.0 + lambda_t) + diag_damp)
-__global__ void minv_kernel(const double* __restrict__ S_diag, const double* __restrict__ d_rms, double lambda_t, double* __restrict__ Minv, std::size_t P) {
+__global__ void minv_kernel(const double* __restrict__ S_diag, const double* __restrict__ d_rms, double lambda_t, double eps, double rms_eps, double* __restrict__ Minv, std::size_t P) {
     std::size_t j = (std::size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (j >= P) return;
-    double diag_damp = sr_eps;
-    if constexpr (sr_rms_damp) {
-        diag_damp += sr_rms_eps * d_rms[j];
-    }
+    double diag_damp = eps;
+    diag_damp += rms_eps * d_rms[j];
     Minv[j] = 1.0 / (S_diag[j] * (1.0 + lambda_t) + diag_damp);
 }
 
-void M_inv_device(const double* S_diag, const double* d_rms, double lambda_t, double* M_inv, std::size_t P, cudaStream_t stream) {
-    minv_kernel<<<blocks_for(P), T256, 0, stream>>>(S_diag, d_rms, lambda_t, M_inv, P);
+void M_inv_device(const double* S_diag, const double* d_rms, double lambda_t, double eps, double rms_eps, double* M_inv, std::size_t P, cudaStream_t stream) {
+    minv_kernel<<<blocks_for(P), T256, 0, stream>>>(S_diag, d_rms, lambda_t, eps, rms_eps, M_inv, P);
     cuda_sync_check("M_inv_device");
 }
 
@@ -351,7 +347,7 @@ void grad_replicas(const std::vector<ReplicaRef>& R, std::size_t P, long long n_
 }
 
 // out = S v over every replica's rows, v resides in GPU 0 (0 as in plan)
-void sr_apply(const std::vector<ReplicaRef>& R, std::size_t P, long long n_valid, double lambda_diag, const double* v, double* out, bool raw, long long* dl) {
+void sr_apply(const std::vector<ReplicaRef>& R, std::size_t P, long long n_valid, double lambda_diag, const double* v, double* out, bool raw, long long* dl, const SrSettings& sr) {
     CUDA_CHECK(cudaSetDevice(R[0].dev));
     const double c = ddot(R[0].h, P, R[0].ds->O_exp_d.d, v, dl);   // O_exp . v (O_exp identical everywhere)
     // Iterate through GPUs 
@@ -385,12 +381,12 @@ void sr_apply(const std::vector<ReplicaRef>& R, std::size_t P, long long n_valid
         cuda_sync_check("sr_apply sum");
     }
     // Apply regularization
-    apply_tail_kernel<<<blocks_for(P), T256>>>(out, v, R[0].ds->S_diag_d.d, R[0].ds->d_rms_d.d, (double)n_valid, lambda_diag, sr_eps, raw, P);
+    apply_tail_kernel<<<blocks_for(P), T256>>>(out, v, R[0].ds->S_diag_d.d, R[0].ds->d_rms_d.d, (double)n_valid, lambda_diag, sr.eps, sr.rms_eps, raw, P);
     cuda_sync_check("sr_apply tail");
 }
 
 // Do an SR step over multiple GPUs
-SRStepLog SR_step_device(const std::vector<ReplicaRef>& R, Ansatz& a, int iter, long long n_valid, std::vector<double>& delta_host, long long* n_dl) {
+SRStepLog SR_step_device(const std::vector<ReplicaRef>& R, Ansatz& a, int iter, long long n_valid, std::vector<double>& delta_host, long long* n_dl, const SrSettings& sr) {
     // Get 0th GPUs state and handle, dl counts device to host downloads
     DeviceState& ds = *R[0].ds;
     const std::size_t P = ds.P;
@@ -398,8 +394,8 @@ SRStepLog SR_step_device(const std::vector<ReplicaRef>& R, Ansatz& a, int iter, 
     long long dl = 0;
 
     // Regularization parameter lamda (+ lambda S_ii) and learning rate
-    double lambda_t = std::max(sr_lambda0 * std::pow(sr_rho, iter), sr_lambda_min);
-    double sr_lr = std::max(sr_eta * std::pow(0.999, iter), 0.001);
+    double lambda_t = sr.lambda(iter);
+    double sr_lr = sr.lr(iter);
 
     // Sum diagonal terms of SR matrix across devices
     for (std::size_t k = R.size(); k-- > 0;) {
@@ -410,29 +406,29 @@ SRStepLog SR_step_device(const std::vector<ReplicaRef>& R, Ansatz& a, int iter, 
         return r.ds->S_diag_d.d; 
     });
     // Evaulate 1/S_ii(1+lambda)
-    M_inv_device(ds.S_diag_d.d, ds.d_rms_d.d, lambda_t, ds.M_inv_d.d, P);
+    M_inv_device(ds.S_diag_d.d, ds.d_rms_d.d, lambda_t, sr.eps, sr.rms_eps, ds.M_inv_d.d, P);
 
     // Use conjugate gradient to find the step 
     auto matvec = [&](const double* v, double* out) { 
-        sr_apply(R, P, n_valid, lambda_t, v, out, false, &dl); 
+        sr_apply(R, P, n_valid, lambda_t, v, out, false, &dl, sr); 
     };
-    CGResult cg = cg_solve_device(h, matvec, ds.grad_d.d, ds.delta_d.d, ds.M_inv_d.d, P, sr_cg_tol, sr_cg_maxit, ds.cg_r.d, ds.cg_z.d, ds.cg_p.d, ds.cg_Ap.d, &dl, 0);
+    CGResult cg = cg_solve_device(h, matvec, ds.grad_d.d, ds.delta_d.d, ds.M_inv_d.d, P, sr.cg_tol, sr.cg_maxit, ds.cg_r.d, ds.cg_z.d, ds.cg_p.d, ds.cg_Ap.d, &dl, 0);
 
     // Add limiting cap on step 
     double q = 0.0, delta_norm = 0.0;
     bool norm_capped = false;
-    sr_apply(R, P, n_valid, lambda_t, ds.delta_d.d, ds.S_delta_d.d, true, &dl);
+    sr_apply(R, P, n_valid, lambda_t, ds.delta_d.d, ds.S_delta_d.d, true, &dl, sr);
     q = ddot(h, P, ds.delta_d.d, ds.S_delta_d.d, &dl);
-    if (q > sr_trust_r2) {
-        const double scale = std::sqrt(sr_trust_r2 / q);
+    if (q > sr.trust_r2) {
+        const double scale = std::sqrt(sr.trust_r2 / q);
         check_blas(cublasDscal(h, (int)P, &scale, ds.delta_d.d, 1), "SR_step_device trust scale");
     }
     double delta_norm_raw = std::sqrt(ddot(h, P, ds.delta_d.d, ds.delta_d.d, &dl));
-    norm_capped = delta_norm_raw > sr_delta_max;
+    norm_capped = delta_norm_raw > sr.delta_max;
     if (norm_capped) {
-        const double scale = sr_delta_max / delta_norm_raw;
+        const double scale = sr.delta_max / delta_norm_raw;
         check_blas(cublasDscal(h, (int)P, &scale, ds.delta_d.d, 1), "SR_step_device norm cap");
-        std::cerr << "SR_step: norm cap triggered -- raw ||delta||=" << delta_norm_raw << " > sr_delta_max=" << sr_delta_max << ", rescaled.\n";
+        std::cerr << "SR_step: norm cap triggered -- raw ||delta||=" << delta_norm_raw << " > delta_max=" << sr.delta_max << ", rescaled.\n";
     }
     delta_norm = std::sqrt(ddot(h, P, ds.delta_d.d, ds.delta_d.d, &dl));    
     // Apply update on CPU

@@ -46,18 +46,18 @@ struct Replica {
 };
 
 // Thermalization per devicewalkers
-static double therm_init_tuned_dev(Replica& R) {
+static double therm_init_tuned_dev(Replica& R, int therm_init, int therm_blocks) {
     const int B = R.B;
-    int per_block = therm_steps_init / therm_init_blocks, remainder = therm_steps_init % therm_init_blocks;
+    int per_block = therm_init / therm_blocks, remainder = therm_init % therm_blocks;
     double acc = 0.0;
     int done = 0;
-    for (int b = 0; b < therm_init_blocks; b++) {
+    for (int b = 0; b < therm_blocks; b++) {
         int sweeps = per_block + (b < remainder ? 1 : 0);
         if (sweeps <= 0) continue;
         acc = therm_batch_device(*R.ds, R.h, B, R.step, sweeps);
         tune_step(acc, R.step);
         done += sweeps;
-        std::cout << "  therm[gpu" << R.dev << "] " << done << "/" << therm_steps_init << " sweeps: acceptance " << acc << ", step " << R.step << std::endl;
+        std::cout << "  therm[gpu" << R.dev << "] " << done << "/" << therm_init << " sweeps: acceptance " << acc << ", step " << R.step << std::endl;
     }
     return acc;
 }
@@ -117,36 +117,36 @@ void merge_stats(const std::vector<Replica>& Rs, BatchStats& bs, std::vector<dou
 
 class GpuBackend : public Backend {
 public:
-    GpuBackend(const Ansatz& a, bool training) : P_(a.n_params()), pool_(n_thread) {
-        const bool same_seed = std::getenv("VMC_MG_SAME_SEED") && std::string(std::getenv("VMC_MG_SAME_SEED")) == "1";
-        // Which GPUs, with how many walkers each:
-        //   VMC_GPUS=auto  every usable GPU, walkers from its free memory (planner)
-        //   VMC_GPUS=one   the single GPU on which the planner fits the most walkers
-        //   VMC_NGPU=2     GPUs 0 and 1 with n_walkers each
-        //   (default)      one GPU (VMC_CUDA_DEVICE, else the one with the most free memory) with n_walkers
-        const char* gp = std::getenv("VMC_GPUS");
-        const char* ng = std::getenv("VMC_NGPU");
+    GpuBackend(const Ansatz& a, const RunConfig& cfg, bool training) : cfg_(cfg), P_(a.n_params()), pool_(n_thread) {
+        const GpuSettings& gs = cfg.gpu;
+        // Which GPUs, with how many walkers each ([gpu] gpus):
+        //   best      one GPU, the one with the most free memory, with `walkers`
+        //   0,1,...   these GPUs with `walkers` each
+        //   auto      every usable GPU, walkers from its free memory (planner)
+        //   auto_one  the single GPU on which the planner fits the most walkers
+
         std::vector<GpuPlan> plan;
-        if (gp && std::string(gp) == "auto") {
-            plan = plan_gpus(a);
-        } else if (gp && std::string(gp) == "one") {
-            const std::vector<GpuPlan> all = plan_gpus(a);
+        if (gs.gpus == "auto") {
+            plan = plan_gpus(a, cfg.records_max(), gs);
+         } else if (gs.gpus == "auto_one") {
+            const std::vector<GpuPlan> all = plan_gpus(a, cfg.records_max(), gs);
             plan.push_back(*std::max_element(all.begin(), all.end(), [](const GpuPlan& x, const GpuPlan& y) { return x.B < y.B; }));
-        } else if (ng && std::string(ng) == "2") {
-            for (int d = 0; d < 2; d++) {
+        } else if (!gs.devices.empty()) {
+            for (int d : gs.devices) {
                 GpuPlan g;
-                g.dev = d;
-                g.B = (std::size_t)n_walkers;
+                g.dev = gpu_select_device(true, d);
+                g.B = (std::size_t)cfg.walkers;
                 plan.push_back(g);
             }
         } else {
             GpuPlan g;
             g.dev = gpu_select_device(true);
-            g.B = (std::size_t)n_walkers;
+            g.B = (std::size_t)cfg.walkers;
             plan.push_back(g);
         }
-        if (std::getenv("VMC_PLAN_ONLY")) {
-            std::printf("plan only: arena for n_walkers=%d would be %.3f GiB\n", n_walkers, (double)arena_bytes_for(a, (std::size_t)n_walkers) / (1024.0*1024*1024));
+
+        if (gs.plan_only) {
+            std::printf("plan only: arena for walkers=%d would be %.3f GiB\n", cfg.walkers, (double)arena_bytes_for(a, (std::size_t)cfg.walkers, cfg.records_max()) / (1024.0*1024*1024));
             std::exit(0);
         }
 
@@ -154,12 +154,12 @@ public:
         for (std::size_t k = 0; k < plan.size(); k++) {
             Rs_[k].dev = plan[k].dev;
             Rs_[k].B = (int)plan[k].B;
-            Rs_[k].salt = (k == 0 || same_seed) ? 0ULL : splitmix64(0x6d67ULL + k);
+            Rs_[k].salt = (k == 0 || gs.same_seed) ? 0ULL : splitmix64(0x6d67ULL + k);
             B_tot_ += Rs_[k].B;
         }
         std::cout << "GPU backend: " << Rs_.size() << " GPU(s), walkers";
         for (const Replica& R : Rs_) std::cout << " GPU" << R.dev << ":" << R.B;
-        std::cout << " (total " << B_tot_ << "), P = " << P_ << (same_seed ? ", SAME SEED (test mode)" : "") << std::endl;
+        std::cout << " (total " << B_tot_ << "), P = " << P_ << (gs.same_seed ? ", SAME SEED (test mode)" : "") << std::endl;
 
         for (Replica& R : Rs_) {
             vmc_seed_salt = R.salt;
@@ -167,7 +167,8 @@ public:
             R.wss.resize(n_thread);
             init_batch(R.wb, a, &pool_, R.wss);
             CUDA_CHECK(cudaSetDevice(R.dev));
-            R.ds = std::make_unique<DeviceState>(a, true, (std::size_t)R.B);
+            R.step = cfg.step;
+            R.ds = std::make_unique<DeviceState>(a, true, (std::size_t)R.B, cfg.records_max());
             R.ds->allocate(a, training);
             if (cublasCreate(&R.h) != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("GPU backend: cublasCreate failed");
         }
@@ -195,7 +196,7 @@ public:
             R.ds->upload_params(a, R.staging);
             upload_and_reset(*R.ds, R.wb, R.staging);
             eval_logp_batch(*R.ds, R.h, R.B);
-            R.acc = therm_init_tuned_dev(R);
+            R.acc = therm_init_tuned_dev(R, cfg_.therm_init, cfg_.therm_blocks);
         });
         double acc = 0.0;
         for (const Replica& R : Rs_) acc += R.acc * R.B;
@@ -207,7 +208,7 @@ public:
 
     // GPU sampler samples
     void sample(const Ansatz& a, int records, bool frozen, SampleStats& s) override {
-        const int total_sweeps = therm_re_sweep + records * sweeps_between_records;
+        const int total_sweeps = cfg_.therm_sweeps + records * cfg_.sweeps_between;
         const auto t0 = std::chrono::steady_clock::now();
 
         run_all(Rs_, [&](Replica& R) {
@@ -218,11 +219,11 @@ public:
                 eval_logp_batch(*R.ds, R.h, R.B);
             }
             const auto ta = std::chrono::steady_clock::now();
-            R.acc = therm_batch_device(*R.ds, R.h, R.B, R.step, therm_re_sweep);
+            R.acc = therm_batch_device(*R.ds, R.h, R.B, R.step, cfg_.therm_sweeps);
             R.therm_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ta).count();
             if (frozen) tune_step(R.acc, R.step);
             R.rt = RecordTimes{};
-            record_batch_device(*R.ds, R.h, a, R.wss[0], R.B, R.step, records, /*with_O=*/!frozen, &R.rt);
+            record_batch_device(*R.ds, R.h, a, R.wss[0], R.B, R.step, records, /*with_O=*/!frozen, &R.rt, 0, cfg_.sweeps_between);
             download_iteration(*R.ds, R.B, records, R.staging, R.it);
             if (!frozen) tune_step(R.acc, R.step);
             R.bytes_up = xfer_stats().bytes_up;
@@ -272,8 +273,8 @@ public:
     SRStepLog sr_step(Ansatz& a, int iter, std::size_t /*n_samples*/, long long n_valid, std::vector<double>& delta, double& rms_damp_mean, long long& n_scalar_dl) override {
         Replica& R0 = Rs_[0];
         CUDA_CHECK(cudaSetDevice(R0.dev));
-        rms_damp_mean = rms_update_device(R0.h, R0.ds->grad_d.d, R0.ds->v_rms_d.d, R0.ds->d_rms_d.d, P_);
-        return SR_step_device(refs_, a, iter, n_valid, delta, &n_scalar_dl);
+        rms_damp_mean = rms_update_device(R0.h, R0.ds->grad_d.d, R0.ds->v_rms_d.d, R0.ds->d_rms_d.d, P_, 0, cfg_.sr.rms_beta, cfg_.sr.rms_eps);
+        return SR_step_device(refs_, a, iter, n_valid, delta, &n_scalar_dl, cfg_.sr);
     }
 
     // Reset timers at end of iteration
@@ -289,6 +290,7 @@ public:
     }
 // Initialize statistics locally
 private:
+    RunConfig cfg_;
     std::size_t P_;
     ThreadPool pool_;
     std::vector<Replica> Rs_;
@@ -298,6 +300,6 @@ private:
 };
 
 // Caller for GPU backend, point to actual GPU Backend
-std::unique_ptr<Backend> make_gpu_backend(const Ansatz& a, bool training) {
-    return std::make_unique<GpuBackend>(a, training);
+std::unique_ptr<Backend> make_gpu_backend(const Ansatz& a, const RunConfig& cfg, bool training) {
+    return std::make_unique<GpuBackend>(a, cfg, training);
 }

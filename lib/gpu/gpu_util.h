@@ -56,18 +56,17 @@ inline void cuda_sync_check(const char* where) {
 }
 
 // If no device available throw error. May either manually pick device or will pick one with most available memory. verbose decides if device properties get printed or not
-inline int gpu_select_device(bool verbose = true) {
+inline int gpu_select_device(bool verbose = true, int device = -1) {
     int count = 0;
     CUDA_CHECK(cudaGetDeviceCount(&count));
     if (count == 0) throw std::runtime_error("gpu_select_device: no CUDA device visible");
 
-    int chosen = -1;
-    if (const char* env = std::getenv("VMC_CUDA_DEVICE")) {
-        chosen = std::atoi(env);
-        if (chosen < 0 || chosen >= count) {
+    int chosen = device;
+    if (device >= 0) {
+        if (device >= count) {
             std::ostringstream oss;
-            oss << "VMC_CUDA_DEVICE=" << env << " but only " << count << " device(s) visible";
-            throw std::runtime_error(oss.str());
+            oss << "gpu_select_device: GPU " << device << " requested but only " << count << " device(s) visible";
+            throw std::runtime_error(oss.str());            
         }
     } else {
         std::size_t best_free = 0;
