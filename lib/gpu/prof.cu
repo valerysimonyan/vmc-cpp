@@ -150,7 +150,7 @@ static SmCores cores_per_sm(int major, int minor) {
 }
 
 // Write the time table
-void GpuProf::report(const char* file, int B, int records, std::size_t P, const char* tag) const {
+void GpuProf::report(const char* file, int B, int records, int sweeps_per_iter, int jet_chunk_walkers, std::size_t P, const char* tag) const {
     if (iters_ == 0) return;
 
     int dev = 0;
@@ -185,7 +185,7 @@ void GpuProf::report(const char* file, int B, int records, std::size_t P, const 
     add(line);
     std::snprintf(line, sizeof(line),
                   "config: B=%d records=%d sweeps/iter=%d N=%d K=%d m_feat=%d P=%zu jet_chunk=%d real=%s\n",
-                  B, records, therm_re_sweep + records * sweeps_between_records, N, K, m_feat, P, jet_chunk,
+                  B, records, sweeps_per_iter, N, K, m_feat, P, jet_chunk_walkers,
                   sizeof(real) == 8 ? "fp64" : "fp32");
     add(line);
     std::snprintf(line, sizeof(line), "iterations profiled: %d, mean %.2f ms/iter\n", iters_, ms_iter);

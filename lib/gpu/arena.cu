@@ -67,7 +67,7 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers, i
             << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).\n"
             << "  Ns_max = " << Ns_max << "  (walkers " << B
             << " x records_max " << records_max << "), P = " << P
-            << ".\n  Reduce walker_per_th, records_per_iter, or the network widths.";
+            << ".\n  Reduce walkers, records or grow_factor ([training] in the run file), or the network widths.";
         throw std::runtime_error(oss.str());
     }
 
@@ -102,8 +102,8 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers, i
             << "\n  wanted " << (double)want / (1024.0*1024*1024) << " GiB on device " << dev
             << ", which reports " << (double)free_b / (1024.0*1024*1024) << " GiB free of "
             << (double)total_b / (1024.0*1024*1024) << " GiB."
-            << "\n  On a shared machine another job may hold the card; set VMC_CUDA_DEVICE"
-            << " or check nvidia-smi.";
+            << "\n  On a shared machine another job may hold the card; pick another with [gpu] gpus"
+            << " in the run file, or check nvidia-smi.";
         throw std::runtime_error(oss.str());
     }
 

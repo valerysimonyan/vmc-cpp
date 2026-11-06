@@ -6,6 +6,8 @@
 !/main.cpp
 !/README.md
 !/BENCH.md
+!/BACKLOG.md
+!/Makefile
 !/lib/
 /lib/*
 !/lib/*.h

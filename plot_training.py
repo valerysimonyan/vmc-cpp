@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Live dashboard for VMC training progress.
 
-Reads training.csv, written by descent() in lib/descent.cpp, and polls it
+Reads training.csv, written by train() in lib/train.cpp, and polls it
 on an interval to refresh the plots. Does not touch or depend on any C++ source.
 
 Usage:
@@ -11,7 +11,7 @@ Usage:
 
 A row is classified as an SR step if lambda > 0 (ADAM rows leave the SRStepLog
 default-constructed, so lambda/cg_iters/etc. are exactly 0) -- this tracks
-N_gd automatically instead of hardcoding it here.
+gd_iterations automatically instead of hardcoding it here.
 """
 
 import math
@@ -199,9 +199,9 @@ def update(_n):
         margin=dict(t=40, b=30),
     )
 
-    # Acceptance plot: all three exchange rates together. The 0.45/0.55
-    # reference band is calibrated to the position-step tuning target in
-    # parallel_run() specifically -- it doesn't literally apply to
+    # Acceptance plot: all three exchange rates together. The 0.30/0.40
+    # reference band is the position-step tuning target in tune_step()
+    # (backend_cpu.cpp, backend_gpu.cu) -- it doesn't literally apply to
     # spin/tau acceptance (those are untuned discrete swaps), shown here
     # only as a rough eyeball reference.
     accept_fig = go.Figure()
@@ -214,8 +214,8 @@ def update(_n):
     accept_fig.add_trace(go.Scatter(
         x=df["step"], y=df["tau_acceptance"], mode="lines+markers", name="tau_acceptance", line=dict(color=COLOR_TAU_ACCEPT),
     ))
-    accept_fig.add_hline(y=0.45, line_dash="dot", line_color="#666666")
-    accept_fig.add_hline(y=0.55, line_dash="dot", line_color="#666666")
+    accept_fig.add_hline(y=0.30, line_dash="dot", line_color="#666666")
+    accept_fig.add_hline(y=0.40, line_dash="dot", line_color="#666666")
     add_phase_transition(accept_fig, transition_step)
     accept_fig.update_layout(
         template="plotly_dark", paper_bgcolor=BG, plot_bgcolor=BG,

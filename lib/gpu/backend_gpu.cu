@@ -302,12 +302,12 @@ public:
     void iteration_end(double ms, int i, int records, std::size_t P, const char* tag) override {
         prof_iteration_end(ms);
         if (i == 0) prof_reset();
-        else if (std::string(tag) == "descent" && (i + 1) % prof_report_every == 0) prof_report((int)B_tot_, records, P, tag);
+        else if (std::string(tag) == "descent" && (i + 1) % prof_report_every == 0) prof_report((int)B_tot_, records, cfg_.therm_sweeps + records * cfg_.sweeps_between, cfg_.gpu.jet_chunk, P, tag);
     }
 
     // Log info about run
     void finish(int records, std::size_t P, const char* tag) override {
-        prof_report((int)B_tot_, records, P, tag);
+        prof_report((int)B_tot_, records, cfg_.therm_sweeps + records * cfg_.sweeps_between, cfg_.gpu.jet_chunk, P, tag);
     }
 // Initialize statistics locally
 private:

@@ -40,7 +40,7 @@ public:
     void iteration_end(double ms_iter);
 
     // Print to stdout and append to `file` (created if absent).
-    void report(const char* file, int B, int records, std::size_t P, const char* tag) const;
+    void report(const char* file, int B, int records, int sweeps_per_iter, int jet_chunk_walkers, std::size_t P, const char* tag) const;
 
     void reset(); // drop accumulators (warm-up)
 
@@ -100,8 +100,8 @@ struct ProfScopeHost {
 inline void prof_iteration_end(double ms_iter) {
     if constexpr (prof_enabled) GpuProf::get().iteration_end(ms_iter);
 }
-inline void prof_report(int B, int records, std::size_t P, const char* tag) {
-    if constexpr (prof_enabled) GpuProf::get().report(prof_report_file, B, records, P, tag);
+inline void prof_report(int B, int records, int sweeps_per_iter, int jet_chunk_walkers, std::size_t P, const char* tag) {
+    if constexpr (prof_enabled) GpuProf::get().report(prof_report_file, B, records, sweeps_per_iter, jet_chunk_walkers, P, tag);
 }
 inline void prof_reset() {
     if constexpr (prof_enabled) GpuProf::get().reset();

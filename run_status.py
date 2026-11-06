@@ -44,6 +44,22 @@ def consts(run):
     return {}
 
 
+def run_config(cdir):
+    # The resolved settings main writes next to training.csv, as {"section.key": value}
+    out, sec = {}, ""
+    path = os.path.join(cdir, "run_config.ini")
+    if not os.path.isfile(path):
+        return out
+    for line in open(path):
+        line = line.split("#")[0].strip()
+        if line.startswith("[") and line.endswith("]"):
+            sec = line[1:-1].strip()
+        elif "=" in line:
+            k, v = (p.strip() for p in line.split("=", 1))
+            out[sec + "." + k] = v
+    return out
+
+
 def alive_dirs():
     out = set()
     if not os.path.isdir("/proc"):
@@ -103,6 +119,11 @@ def summarize(runs, window, show_jas):
         name = os.path.basename(os.path.abspath(run))
         rows = list(csv.DictReader(open(os.path.join(cdir, "training.csv"))))
         c = consts(run)
+        rc = run_config(cdir)
+        if rc:   # runs with a run file: the nucleus and the iteration count are in run_config.ini
+            c["N"], c["N_p"] = rc.get("build.N", c.get("N")), rc.get("build.N_p", c.get("N_p"))
+            c["N_descent"] = str(int(rc.get("training.gd_iterations", 0)) + int(rc.get("training.sr_iterations", 0)))
+            c["env_adam_lr"] = rc.get("adam.env_lr", c.get("env_adam_lr"))
         N, Np = int(c.get("N", 0) or 0), int(c.get("N_p", 0) or 0)
         nuc, Eref = REF.get((N, Np), ("N=%d" % N if N else "?", None))
         stat = "RUN" if cdir in alive else "done"
