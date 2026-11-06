@@ -13,11 +13,11 @@
 
 
 // Get total needed byte count for ansatz and amount of walkers
-std::size_t arena_bytes_for(const Ansatz& a, std::size_t B, int records_max) {
+std::size_t arena_bytes_for(const Ansatz& a, std::size_t B, int records_max, int jet_chunk_walkers) {
     g_dry_alloc = true;
     std::size_t total = 0;
     try {
-        DeviceState ds(a, false, B, records_max);
+        DeviceState ds(a, false, B, records_max, jet_chunk_walkers);
         ds.allocate(a, true, false);
         total = ds.allocated_bytes();
     } catch (...) { 
@@ -78,13 +78,13 @@ std::vector<GpuPlan> plan_gpus(const Ansatz& a, int records_max, const GpuSettin
         }
         // Look at number of walkers that we can maximally fit for the ansatz while staying withing budget and also hi is beneath a certain absolute limit (4,194,304 walkers denoted by 1u << 22)
         std::size_t lo = 0, hi = step;
-        while ((double)arena_bytes_for(a, hi, records_max) <= budget && hi < (1u << 22)) { 
+        while ((double)arena_bytes_for(a, hi, records_max, gs.jet_chunk) <= budget && hi < (1u << 22)) { 
             lo = hi; hi *= 2; 
         }
         // We now have the range of walkers we can fit bounded by a single of power 2. We can now narrow it down to a single warp. Do a binary search , if mid is within budget make it the lower bound. Else the higher bound. Walker allocation always a multiple of step in the end
         while (hi - lo > step) {
             const std::size_t mid = ((lo + hi) / 2 / step) * step;
-            if ((double)arena_bytes_for(a, mid, records_max) <= budget) lo = mid; 
+            if ((double)arena_bytes_for(a, mid, records_max, gs.jet_chunk) <= budget) lo = mid; 
             else hi = mid;
         }
         // If there is a cap and the lower bound is above it, set the lo to cap
@@ -96,7 +96,7 @@ std::vector<GpuPlan> plan_gpus(const Ansatz& a, int records_max, const GpuSettin
         }
         // We assign lo amount of walkers to g.B and the amount of data we need to g.need_gb. Print amount per device and add to the plan
         g.B = lo;
-        g.need_gib = (double)arena_bytes_for(a, lo, records_max) / GiB;
+        g.need_gib = (double)arena_bytes_for(a, lo, records_max, gs.jet_chunk) / GiB;
         std::printf("  GPU%d: %.2f GiB free, %u%% busy -> %zu walkers (arena %.2f GiB)\n", d, g.free_gib, g.util, g.B, g.need_gib);
         plan.push_back(g);
     }

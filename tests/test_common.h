@@ -32,8 +32,8 @@ inline double psi(const dvec& x, const dvec& s, const dvec& t, const Ansatz& a, 
 inline double log_p(const dvec& x, const dvec& s, const dvec& t, const Ansatz& a, Workspace& ws) { 
     return log_p(x.data(), s.data(), t.data(), a, ws); 
 }
-inline Jet jpsi(const dvec& x, const dvec& s, const dvec& t, const Ansatz& a, Workspace& ws) { 
-    return jpsi(x.data(), s.data(), t.data(), a, ws); 
+inline Jet jpsi(const dvec& x, const dvec& s, const dvec& t, const Ansatz& a, Workspace& ws, bool inv_ready = false) { 
+    return jpsi(x.data(), s.data(), t.data(), a, ws, inv_ready); 
 }
 inline void build_st_table(const dvec& x, const Ansatz& a, Workspace& ws) { 
     build_st_table(x.data(), a, ws); 

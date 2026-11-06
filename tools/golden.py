@@ -20,18 +20,18 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORK = os.path.join(REPO, "build-golden")
 REF = os.path.join(REPO, "tests", "golden")
 
-# The short run every setup shares
+# The short run every setup shares; jet_chunk = 640 splits mg1's 1280 walkers into two jet chunks
 GOLDEN_RUN = """[training]
 sr_iterations = 10
+walkers = 640
 therm_init = 5
 ckpt_every = 10
 eval_iters = 5
 diss_threshold = 1e9
-"""
 
-# The one compile-time override: n_walkers = n_thread * walker_per_th is the default walker count, and it also sizes
-# the GPU jet and exchange chunks (layouts.h), which set how mg1's 1280 walkers are split
-BUILD_CONSTANTS = {"walker_per_th": "32"}
+[gpu]
+jet_chunk = 640
+"""
 
 BUILDS = {"cpu": False, "cuda": True}   # build name -> CUDA on
 
@@ -52,24 +52,12 @@ def sh(cmd, **kw):
     if r.returncode != 0:
         sys.exit(f"golden: command failed: {' '.join(cmd)}\n{r.stdout[-3000:]}{r.stderr[-3000:]}")
     return r.stdout
-
 def build(name):
     cuda = BUILDS[name]
-    src = os.path.join(WORK, name)
-    shutil.rmtree(src, ignore_errors=True)
-    keep = ("lib", "tests", "tools", "main.cpp", "CMakeLists.txt")
-    shutil.copytree(REPO, src, ignore=lambda d, names: [n for n in names if d == REPO and n not in keep])
-    path = os.path.join(src, "lib", "constants.h")
-    text = open(path).read()
-    for key, val in BUILD_CONSTANTS.items():
-        text, n = re.subn(r"(inline constexpr [\w: ]+?\b%s\s*=\s*)[^;]+;" % key,
-                          lambda m: m.group(1) + val + ";", text)
-        if n != 1:
-            sys.exit(f"golden: constant '{key}' matched {n} times in constants.h")
-    open(path, "w").write(text)
-    b = os.path.join(src, "b")
+    b = os.path.join(WORK, name)
+    shutil.rmtree(b, ignore_errors=True)
     print(f"  building {name} ...", flush=True)
-    sh(["cmake", "-S", src, "-B", b, "-DCMAKE_BUILD_TYPE=Release", f"-DVMC_CUDA={'ON' if cuda else 'OFF'}"])
+    sh(["cmake", "-S", REPO, "-B", b, "-DCMAKE_BUILD_TYPE=Release", f"-DVMC_CUDA={'ON' if cuda else 'OFF'}"])
     sh(["cmake", "--build", b, "-j16", "--target", "main", "frozen_eval"])
     return b
 

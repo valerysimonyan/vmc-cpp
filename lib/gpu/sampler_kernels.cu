@@ -11,18 +11,16 @@ __global__ void propose_coord_kernel(const real* __restrict__ x, real* __restric
     int w = blockIdx.x * blockDim.x + threadIdx.x;
     if (w >= B) return;
 
-    // Draw a random coordinate and step size
+    // Move a whole particle at once
     PhiloxStream st = stream_for(seed, w, rng_ctr[w]);
-    const int idx = st.uint_below(D);
-    const real disp = (real)st.usym(step);
-    rng_ctr[w] = st.ctr;
-
-    // Propose a new coordinate, log the coordinate with propose update
+    const int idx = st.uint_below(N);
     const real* xw = x + (std::size_t)w * D;
     real* pw = x_prop + (std::size_t)w * D;
     for (int d = 0; d < D; d++) pw[d] = xw[d];
-    pw[idx] += disp;
+    for (int k = 0; k < dim; k++) pw[idx*dim + k] += (real)st.usym(step);
+    rng_ctr[w] = st.ctr;
 
+    // Log moved particle
     prop_idx[w] = idx;
 }
 

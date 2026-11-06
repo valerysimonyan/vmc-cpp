@@ -167,7 +167,7 @@ __global__ void orb_seed_kernel(const real* __restrict__ rho, const real* __rest
 }
 
 // Fill O's
-__global__ void o_finalize_kernel(const double* __restrict__ src, opool_t* __restrict__ dst, const unsigned char* __restrict__ valid, const real* __restrict__ S, const real* __restrict__ x_sh, const real* __restrict__ s, const real* __restrict__ t, real alpha, std::size_t P, int Bc, int w_off) {
+__global__ void o_finalize_kernel(const double* __restrict__ src, opool_t* __restrict__ dst, const unsigned char* __restrict__ valid, const real* __restrict__ S, const real* __restrict__ x_sh, const real* __restrict__ s, const real* __restrict__ t, const real* __restrict__ alpha_d, std::size_t P, int Bc, int w_off) {
     const int wl = blockIdx.x;
     if (wl >= Bc) return;
     const std::size_t w = (std::size_t)w_off + wl;
@@ -184,7 +184,7 @@ __global__ void o_finalize_kernel(const double* __restrict__ src, opool_t* __res
 
     if (threadIdx.x == 0) {
         const real r_env = env_radius(env_r2(x_sh + w * D));
-        row[P_net] = (opool_t)O_alpha(alpha, r_env);
+        row[P_net] = (opool_t)O_alpha(*alpha_d, r_env);
         real feat[n_jas_par + 1];
         jastrow_O<real, real>(x_sh + w * D, s + w * N, t + w * N, feat);
         for (int m = 0; m < n_jas_par; m++) row[P_net + 1 + m] = (opool_t)feat[m];
@@ -208,13 +208,7 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
     const int C = fp32_opool ? std::min(C_req, opool_stage_rows) : C_req;
     const std::size_t P = ds.P;
 
-    real alpha;
-    {
-        VMC_PROF_HOST("/transfers/alpha_dn");
-        CUDA_CHECK(cudaMemcpyAsync(&alpha, ds.params.d + (P - n_params_env), sizeof(real), cudaMemcpyDeviceToHost, stream));
-        xfer_note_dn(sizeof(real));
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-    }
+    const real* alpha_d = ds.params.d + (P - n_params_env);   
 
     // rho's output layer is linear, so its stashed pre-activation IS rho.
     const real* rho = ds.cache_rho.z.back().d;
@@ -248,7 +242,7 @@ void assemble_O_batch(DeviceState& ds, cublasHandle_t handle, int r, int B, cuda
         backprop_net(handle, ds.orb_net_d, ds.cache_orb, ds.params.d, ds.bp_a.d, ds.bp_b.d, ds.bp_wt.d, N, Bc, w_off, O_first, P, nullptr, stream);
 
         { VMC_PROF("o_finalize", stream);
-          o_finalize_kernel<<<(unsigned)Bc, 128, 0, stream>>>(O_first, O_dst, ds.valid_loc.d, ds.S.d, ds.x_sh.d, ds.s.d, ds.t.d, alpha, P, Bc, w_off);
+          o_finalize_kernel<<<(unsigned)Bc, 128, 0, stream>>>(O_first, O_dst, ds.valid_loc.d, ds.S.d, ds.x_sh.d, ds.s.d, ds.t.d, alpha_d, P, Bc, w_off);
           cuda_sync_check("o_finalize"); }
     }
 }

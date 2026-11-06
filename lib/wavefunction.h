@@ -237,7 +237,7 @@ double psi(const double* x, const double* s, const double* t, const Ansatz& a, W
 
 double log_p(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws);
 
-Jet jpsi(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws);
+Jet jpsi(const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, bool inv_ready = false);   // inv_ready: ws holds psi(need_inv)'s dets and inverses for this x
 
 void build_st_table(const double* x, const Ansatz& a, Workspace& ws);
 

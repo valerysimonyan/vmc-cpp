@@ -99,13 +99,17 @@ double lu_det_inv(std::vector<double>& M, int n, std::vector<double>& Minv, std:
 Jet det_jet_from_minv(const Jet* Mjet, int n, std::vector<double>& Mval, std::vector<double>& Minv, std::vector<int>& piv, std::vector<double>& col_scratch, std::vector<double>& G, std::vector<double>& B) {
     const int nn = n*n;
     if ((int)Mval.size() != nn) Mval.resize(nn);
-    if ((int)G.size() != nn) G.resize(nn);
-    if ((int)B.size() != nn) B.resize(nn);
-
     for (int i = 0; i < nn; i++) Mval[i] = Mjet[i].v;
     double det_v = lu_det_inv(Mval, n, Minv, piv, col_scratch);
     if (det_v == 0.0) return Jet(0.0);
+    return det_jet_given_inv(Mjet, n, det_v, Minv.data(), G, B);
+}
 
+// Gradient and Laplacian of det M from det_v and Minv, using d(det M)/dM(i,j) = Minv(j,i) det M
+Jet det_jet_given_inv(const Jet* Mjet, int n, double det_v, const double* Minv, std::vector<double>& G, std::vector<double>& B) {
+    const int nn = n*n;
+    if ((int)G.size() != nn) G.resize(nn);
+    if ((int)B.size() != nn) B.resize(nn);
     std::array<double, D> gsum{};
 #ifdef DETJET_SELFCHECK
     std::array<double, D> gmag{};

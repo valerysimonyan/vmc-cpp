@@ -123,9 +123,9 @@ static double wb_logp_from_S_ratio(double logp_cur, double S_cur, double S_new) 
     return logp_cur + std::log(std::fabs(S_new)) - std::log(std::fabs(S_cur));
 }
 
-// Per COORDINATE proposal, walker w consumes, in this order:
-//     1. uint_below(D)      the coordinate index
-//     2. usym(step)         the displacement
+// Per PARTICLE proposal, walker w consumes, in this order:
+//     1. uint_below(N)      the particle index
+//     2. usym(step) x dim   the displacement, one per direction
 //     3. u01()              the acceptance draw -- CONDITIONAL, see below
 //
 // Per DISCRETE (spin or isospin) proposal:
@@ -141,15 +141,18 @@ void sweep_one(WalkerBatch& wb, int w, const Ansatz& a, double step, Workspace& 
 
     // Metropolis over position
     for (int j = 0; j < draws; j++) {
-        int idx = uint_below(wb, w, D);
-        double old = xw[idx];
-        xw[idx] += usym(wb, w, step);
+        double* xi = xw + uint_below(wb, w, N) * dim;
+        double old[dim];
+        for (int k = 0; k < dim; k++) {
+            old[k] = xi[k];
+            xi[k] += usym(wb, w, step);
+        }
         double logp_new = log_p(xw, sw, tw, a, ws);
         if (wb_metro_accept(wb, w, logp, logp_new)) {
             logp = logp_new;
             wb.acc[w]++;
         } else {
-            xw[idx] = old;
+            for (int k = 0; k < dim; k++) xi[k] = old[k];
         }        
     }
 

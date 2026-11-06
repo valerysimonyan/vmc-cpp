@@ -134,7 +134,7 @@ DescentResult train(Ansatz& a, const RunConfig& cfg, const CheckpointState& star
     for (int i = i0; i < cfg.iterations(); i++) {
         // Begin timer, record count, and sample size
         const auto t0 = std::chrono::steady_clock::now();
-        const int records_now = (i >= cfg.grow_at_iter()) ? cfg.records_max() : cfg.records;
+        const int records_now = be->prepare_records((i >= cfg.grow_at_iter()) ? cfg.records_max() : cfg.records);
         const std::size_t n_samples = B * (std::size_t)records_now;
 
         // Sample, ;pg the observables and the clipped-energy gradient
@@ -202,7 +202,7 @@ DescentResult train(Ansatz& a, const RunConfig& cfg, const CheckpointState& star
         g.n_invalid = s.bs.n_invalid;
         g.alpha = a.get_param(alpha_idx);
         be->grad_to_host(alpha_idx, 1, &g.grad_alpha);
-        g.delta_alpha = delta[alpha_idx];
+        g.delta_alpha = g.sr.step_scale * delta[alpha_idx];
         g.metro_ms = s.metro_ms; g.local_E_ms = s.local_E_ms; g.o_ms = s.o_ms; g.gpu_ms = s.gpu_ms; g.xfer_ms = s.xfer_ms;
         g.bytes_up = s.bytes_up; g.bytes_dn = s.bytes_dn;
         csv_row(csv, g);

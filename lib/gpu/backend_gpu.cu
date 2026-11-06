@@ -25,8 +25,8 @@
 
 // Tune acceptance rate
 static void tune_step(double acceptance, double& step) {
-    if (acceptance < 0.45) step *= 0.9;
-    else if (acceptance > 0.55) step *= 1.1;
+    if (acceptance < 0.30) step *= 0.9;
+    else if (acceptance > 0.40) step *= 1.1;
 }
 
 // Stores per device information
@@ -117,7 +117,7 @@ void merge_stats(const std::vector<Replica>& Rs, BatchStats& bs, std::vector<dou
 
 class GpuBackend : public Backend {
 public:
-    GpuBackend(const Ansatz& a, const RunConfig& cfg, bool training) : cfg_(cfg), P_(a.n_params()), pool_(n_thread) {
+    GpuBackend(const Ansatz& a, const RunConfig& cfg, bool training) : cfg_(cfg), P_(a.n_params()), pool_(n_thread), o_records_(training ? cfg.records : 0) {
         const GpuSettings& gs = cfg.gpu;
         // Which GPUs, with how many walkers each ([gpu] gpus):
         //   best      one GPU, the one with the most free memory, with `walkers`
@@ -146,7 +146,7 @@ public:
         }
 
         if (gs.plan_only) {
-            std::printf("plan only: arena for walkers=%d would be %.3f GiB\n", cfg.walkers, (double)arena_bytes_for(a, (std::size_t)cfg.walkers, cfg.records_max()) / (1024.0*1024*1024));
+            std::printf("plan only: arena for walkers=%d would be %.3f GiB\n", cfg.walkers, (double)arena_bytes_for(a, (std::size_t)cfg.walkers, cfg.records_max(), gs.jet_chunk) / (1024.0*1024*1024));
             std::exit(0);
         }
 
@@ -168,7 +168,7 @@ public:
             init_batch(R.wb, a, &pool_, R.wss);
             CUDA_CHECK(cudaSetDevice(R.dev));
             R.step = cfg.step;
-            R.ds = std::make_unique<DeviceState>(a, true, (std::size_t)R.B, cfg.records_max());
+            R.ds = std::make_unique<DeviceState>(a, true, (std::size_t)R.B, cfg.records_max(), cfg.gpu.jet_chunk, o_records_);
             R.ds->allocate(a, training);
             if (cublasCreate(&R.h) != CUBLAS_STATUS_SUCCESS) throw std::runtime_error("GPU backend: cublasCreate failed");
         }
@@ -206,6 +206,23 @@ public:
         if constexpr (prof_enabled) prof_reset();
     }
 
+    // Grow every replica's O pool to this many records. If one has no room, keep sampling with the records
+    // that fit and try again next iteration
+    int prepare_records(int records) override {
+        if (records <= o_records_) return records;
+        for (Replica& R : Rs_) {
+            CUDA_CHECK(cudaSetDevice(R.dev));
+            if (!R.ds->ensure_O_pool(records)) {
+                if (!o_warned_) std::printf("WARNING: GPU%d has no room to grow the O pool to %d records; continuing with %d\n", R.dev, records, o_records_);
+                o_warned_ = true;
+                return o_records_;
+            }
+        }
+        o_records_ = records;
+        return records;
+    }
+
+
     // GPU sampler samples
     void sample(const Ansatz& a, int records, bool frozen, SampleStats& s) override {
         const int total_sweeps = cfg_.therm_sweeps + records * cfg_.sweeps_between;
@@ -221,10 +238,14 @@ public:
             const auto ta = std::chrono::steady_clock::now();
             R.acc = therm_batch_device(*R.ds, R.h, R.B, R.step, cfg_.therm_sweeps);
             R.therm_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ta).count();
-            if (frozen) tune_step(R.acc, R.step);
+            if (frozen && cfg_.therm_sweeps > 0) tune_step(R.acc, R.step);
             R.rt = RecordTimes{};
             record_batch_device(*R.ds, R.h, a, R.wss[0], R.B, R.step, records, /*with_O=*/!frozen, &R.rt, 0, cfg_.sweeps_between);
             download_iteration(*R.ds, R.B, records, R.staging, R.it);
+            
+            // Acceptance over every sweep of this iteration (therm and record sweeps), so it exists when therm_sweeps = 0
+            R.acc = (double)R.it.acc / ((double)R.B * total_sweeps * draws);
+
             if (!frozen) tune_step(R.acc, R.step);
             R.bytes_up = xfer_stats().bytes_up;
             R.bytes_dn = xfer_stats().bytes_dn;
@@ -297,6 +318,8 @@ private:
     std::vector<ReplicaRef> refs_;
     int B_tot_ = 0;
     int records_ = 0;
+    int o_records_ = 0;       // Records every replica's O pool holds
+    bool o_warned_ = false;   // A failed O pool growth has been reported
 };
 
 // Caller for GPU backend, point to actual GPU Backend

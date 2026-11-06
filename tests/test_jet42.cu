@@ -216,9 +216,10 @@ static void test_validity(const Ansatz& a, cublasHandle_t h) {
 
     std::vector<uint8_t> vmask(dv.ds.valid_jet.n);
     dv.ds.valid_jet.down(vmask.data(), vmask.size());
-    std::vector<real> Pd(dv.ds.psi_dbl.n); dv.ds.psi_dbl.down(Pd.data(), Pd.size());
+    std::vector<real> Ej(dv.ds.env_jet.n); dv.ds.env_jet.down(Ej.data(), Ej.size());
     std::vector<real> Sd(dv.ds.S.n);       dv.ds.S.down(Sd.data(), B);
-
+    std::vector<real> Pd(B);
+    for (int w = 0; w < B; w++) Pd[w] = Ej[w] * Sd[w];   // the psi validity_jet compares the jet psi against
     Workspace ws;
     int mism = 0, n_valid = 0, n_S = 0, n_psi = 0, n_ek = 0;
     int n_split = 0, n_split_outside = 0, n_split_devstricter = 0;
@@ -301,9 +302,8 @@ static void test_validity_guards(const Ansatz& a, cublasHandle_t h) {
     dv.ds.S.up(S2.data(), B);
     dv.ds.jet_psi.up(Jp2.data(), Jp2.size());
     dv.ds.E_kin.up(Ek2.data(), Ek2.size());
+    validity_jet(dv.ds.jet_psi.d, dv.ds.S.d, dv.ds.env_jet.d, dv.ds.E_kin.d, dv.ds.valid_jet.d, B, 0, B);
 
-    validity_jet(dv.ds.jet_psi.d, dv.ds.S.d, dv.ds.x_sh.d, dv.ds.s.d, dv.ds.t.d, dv.ds.params.d, dv.ds.P,
-                 dv.ds.E_kin.d, dv.ds.psi_dbl.d, dv.ds.valid_jet.d, B, 0, B);
 
     std::vector<uint8_t> got(dv.ds.valid_jet.n);
     dv.ds.valid_jet.down(got.data(), got.size());
@@ -325,7 +325,7 @@ static void test_chunk_invariance(const Ansatz& a, cublasHandle_t h) {
 
     Dev dv(a); dv.push(hx, hs, ht, a);
 
-    eval_jet_batch(dv.ds, h, B);                   // one chunk (jet_chunk == 0)
+    eval_jet_batch(dv.ds, h, B);                   // one chunk (B < jet_w)
     std::vector<real> Jp1(dv.ds.jet_psi.n), Jd1(dv.ds.jet_det.n), Ek1(dv.ds.E_kin.n);
     dv.ds.jet_psi.down(Jp1.data(), Jp1.size());
     dv.ds.jet_det.down(Jd1.data(), Jd1.size());

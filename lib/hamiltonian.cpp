@@ -23,7 +23,7 @@ bool local_E(const double* x, const double* s, const double* t, const Ansatz& a,
     }
 
     // Declare Jet psi, throw error if it is different from double psi
-    Jet pj = jpsi(x, s, t, a, ws);
+    Jet pj = jpsi(x, s, t, a, ws, true);
     bool psi_mismatch = std::fabs(pj.v - dpsi) > 1e-6 * std::max(1.0, std::fabs(dpsi));
     if (!std::isfinite(pj.v) || std::fabs(pj.v) < psi_floor || psi_mismatch) {
         ws.n_node_hits++;

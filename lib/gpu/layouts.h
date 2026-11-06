@@ -11,7 +11,6 @@
 
 
 inline constexpr int rows_per_combo = 4;
-inline constexpr std::size_t rows_max_phase3 =  (std::size_t)n_walkers * (std::size_t)N * (std::size_t)rows_per_combo;
 
 inline constexpr int jet_C = D + 2;
 
@@ -19,9 +18,6 @@ inline constexpr int jet_C = D + 2;
 using fwd_t   = std::conditional_t<fp32_forward, float, double>;
 using opool_t = std::conditional_t<fp32_opool,   float, double>;
 
-// Walkers per jet chunk: jet_chunk, or the whole batch when jet_chunk is 0.
-inline constexpr int jet_walkers = (jet_chunk > 0) ? jet_chunk : n_walkers;
-inline constexpr std::size_t jet_rows = (std::size_t)jet_walkers * (std::size_t)N;
 
 VMC_HD inline constexpr std::size_t jet_block_stride(std::size_t rows, std::size_t width_max) {
     return rows * width_max;

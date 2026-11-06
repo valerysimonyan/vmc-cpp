@@ -166,8 +166,9 @@ int main() {
             therm_batch_device(ds, h, B, 1.0, 5);
             eval_local_E_device(ds, h, a, wss[0], B);
             auto v = dl(ds.jet_psi, (std::size_t)B);          // value block of the jet psi
-            auto pd = dl(ds.psi_dbl, (std::size_t)B);
             auto S = dl(ds.S, (std::size_t)B);
+            auto pd = dl(ds.env_jet, (std::size_t)B);
+            for (int w = 0; w < B; w++) pd[w] *= S[w];        
             auto valid = dl(ds.valid_loc, (std::size_t)B);
             for (int w = 0; w < B; w++) {
                 n_eval++;

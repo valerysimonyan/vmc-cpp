@@ -414,27 +414,22 @@ SRStepLog SR_step_device(const std::vector<ReplicaRef>& R, Ansatz& a, int iter, 
     };
     CGResult cg = cg_solve_device(h, matvec, ds.grad_d.d, ds.delta_d.d, ds.M_inv_d.d, P, sr.cg_tol, sr.cg_maxit, ds.cg_r.d, ds.cg_z.d, ds.cg_p.d, ds.cg_Ap.d, &dl, 0);
 
-    // Add limiting cap on step 
-    double q = 0.0, delta_norm = 0.0;
-    bool norm_capped = false;
+    // Add limiting cap on step size via scale param
     sr_apply(R, P, n_valid, lambda_t, ds.delta_d.d, ds.S_delta_d.d, true, &dl, sr);
-    q = ddot(h, P, ds.delta_d.d, ds.S_delta_d.d, &dl);
-    if (q > sr.trust_r2) {
-        const double scale = std::sqrt(sr.trust_r2 / q);
-        check_blas(cublasDscal(h, (int)P, &scale, ds.delta_d.d, 1), "SR_step_device trust scale");
-    }
-    double delta_norm_raw = std::sqrt(ddot(h, P, ds.delta_d.d, ds.delta_d.d, &dl));
-    norm_capped = delta_norm_raw > sr.delta_max;
+    const double q = ddot(h, P, ds.delta_d.d, ds.S_delta_d.d, &dl);
+    double scale = 1.0;
+    if (q > sr.trust_r2) scale = std::sqrt(sr.trust_r2 / q);
+    const double delta_norm_raw = scale * std::sqrt(ddot(h, P, ds.delta_d.d, ds.delta_d.d, &dl));
+    const bool norm_capped = delta_norm_raw > sr.delta_max;
     if (norm_capped) {
-        const double scale = sr.delta_max / delta_norm_raw;
-        check_blas(cublasDscal(h, (int)P, &scale, ds.delta_d.d, 1), "SR_step_device norm cap");
+        scale *= sr.delta_max / delta_norm_raw;
         std::cerr << "SR_step: norm cap triggered -- raw ||delta||=" << delta_norm_raw << " > delta_max=" << sr.delta_max << ", rescaled.\n";
     }
-    delta_norm = std::sqrt(ddot(h, P, ds.delta_d.d, ds.delta_d.d, &dl));    
-    // Apply update on CPU
+
+    // Apply the scaled update on CPU
     delta_host.resize(P);
     ds.delta_d.down(delta_host.data(), P);
-    for (std::size_t j = 0; j < P; j++) a.add_to_param(j, -sr_lr * delta_host[j]);
+    for (std::size_t j = 0; j < P; j++) a.add_to_param(j, -sr_lr * scale * delta_host[j]);
     if (n_dl) *n_dl = dl;
-    return {lambda_t, cg.iters, cg.rel_residual, delta_norm, q, norm_capped};
+    return {lambda_t, cg.iters, cg.rel_residual, norm_capped ? sr.delta_max : delta_norm_raw, q, norm_capped, scale};
 }

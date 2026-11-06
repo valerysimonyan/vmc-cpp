@@ -133,6 +133,8 @@ RunConfig load_run_config(const char* path) {
         {"gpu.max_util",    [&](const std::string& v, const std::string& w) { c.gpu.max_util = parse_int(v, w); }},
         {"gpu.max_walkers", [&](const std::string& v, const std::string& w) { c.gpu.max_walkers = parse_int(v, w); }},
         {"gpu.min_walkers", [&](const std::string& v, const std::string& w) { c.gpu.min_walkers = parse_int(v, w); }},
+        {"gpu.jet_chunk",   [&](const std::string& v, const std::string& w) { c.gpu.jet_chunk = parse_int(v, w); }},
+
     };
 
     std::string line, section;
@@ -160,6 +162,7 @@ RunConfig load_run_config(const char* path) {
     if (c.gd_iterations < 0 || c.sr_iterations < 0) throw std::runtime_error("run file: iteration counts must be >= 0");
     if (c.walkers <= 0 || c.records <= 0 || c.grow_factor <= 0) throw std::runtime_error("run file: walkers, records and grow_factor must be positive");
     if (c.ckpt_every <= 0 || c.eval_iters <= 0 || c.therm_blocks <= 0 || c.diss_window <= 0) throw std::runtime_error("run file: ckpt_every, eval_iters, therm_blocks and diss_window must be positive");
+    if (c.gpu.jet_chunk <= 0) throw std::runtime_error("run file: [gpu] jet_chunk must be positive");
     if (c.sr.cg_maxit <= 0 || c.adam.env_decay_it <= 0) throw std::runtime_error("run file: sr.cg_maxit and adam.env_decay_it must be positive");
     if (c.gpu.overhead_gb < 0 || c.gpu.margin_gb < 0 || c.gpu.max_walkers < 0 || c.gpu.min_walkers < 0) throw std::runtime_error("run file: [gpu] memory and walker limits must be >= 0");
 
@@ -230,7 +233,9 @@ void write_run_config(std::ostream& o, const RunConfig& c) {
       << "margin_gb = " << c.gpu.margin_gb << "\n"
       << "max_util = " << c.gpu.max_util << "\n"
       << "max_walkers = " << c.gpu.max_walkers << "\n"
-      << "min_walkers = " << c.gpu.min_walkers << "\n";    o.precision(old_precision);
+      << "min_walkers = " << c.gpu.min_walkers << "\n"
+      << "jet_chunk = " << c.gpu.jet_chunk << "\n";
+    o.precision(old_precision);
 }
 
 // Throws errors when present and informs of all the settings we chose

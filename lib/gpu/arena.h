@@ -42,7 +42,7 @@ struct DeviceState {
     DeviceArray<real> params;  //P, flat w/ [h_net.params, rho_net.params, orb_net.paramas, alpha]
 
     DeviceArray<double> E_pool;       // Ns_max
-    DeviceArray<opool_t> O_pool;
+    DeviceArray<opool_t> O_pool;      // records_alloc*B*P at first, grown by ensure_O_pool up to Ns_max*P
     DeviceArray<double>  O_stage;     // fp32_opool: opool_stage_rows * P FP64 rows before the cast
 
     // Float version of params
@@ -55,7 +55,8 @@ struct DeviceState {
     std::size_t B = 0, P = 0, Ns_max = 0;
 
     std::size_t rows_max = 0;   // B * N * rows_per_combo:row capacity of the eval buffers
-    int ex_w = 0;               // walkers per exchange chunk (was ex_walkers)
+    int ex_w = 0;               // walkers per exchange chunk 
+    int jet_w = 0;              // walkers per jet chunk: min(B, jet_chunk); the jet buffers hold this many
     bool soft_cap = true;       // o_pool_max_gb checks; off when the planner sized B from actual free memory
 
     DeviceArray<real> x_sh;          // B*D
@@ -78,19 +79,19 @@ struct DeviceState {
     DeviceArray<real> logp_prop;  // B
     DeviceArray<real> S_prop;     // B
     DeviceArray<real> S_cur;      // B, current S across the discrete block
-    DeviceArray<int> prop_idx;    // B, which coordinate was proposed
+    DeviceArray<int> prop_idx;    // B, which particle was moved
     DeviceArray<real> s_prop;     // B*N
     DeviceArray<real> t_prop;     // B*N
     DeviceArray<int> pick_a;      // B, up/proton index chosen
     DeviceArray<int> pick_b;      // B, down/neutron index chosen
     DeviceArray<long long> acc, sp_acc, tau_acc;  // B each
 
-    DeviceArray<real> jet_feat;     // C * jet_rows * (dim+2)
-    DeviceArray<real> jet_h;        // C * jet_rows * m_feat
-    DeviceArray<real> jet_xi;       // C * jet_walkers * m_feat
-    DeviceArray<real> jet_rho;      // C * jet_walkers * K
-    DeviceArray<real> jet_orb;      // C * jet_rows * (K*N)   <- the big one
-    DeviceArray<real> jet_a, jet_b; // ping-pong, C * jet_rows * hidden_width
+    DeviceArray<real> jet_feat;     // C * jet_w*N * (dim+2)
+    DeviceArray<real> jet_h;        // C * jet_w*N * m_feat
+    DeviceArray<real> jet_xi;       // C * jet_w * m_feat
+    DeviceArray<real> jet_rho;      // C * jet_w * K
+    DeviceArray<real> jet_orb;      // C * jet_w*N * (K*N)   <- the big one
+    DeviceArray<real> jet_a, jet_b; // ping-pong, C * jet_w*N * hidden_width
     
     DeviceArray<real> Minv_batch;    // K*B*N*N, fixed stride, row-major inverses
     DeviceArray<double*> inv_ptrs;   // K*B, getriBatched output pointers
@@ -99,7 +100,7 @@ struct DeviceState {
     DeviceArray<real> jet_det;       // C * B * K
     DeviceArray<real> jet_psi;       // C * B
     DeviceArray<real> S_jet_v;       // B, S_jet.v (oracle + 4.3)
-    DeviceArray<real> psi_dbl;       // B, env*S from the double path
+    DeviceArray<real> env_jet;       // B, envelope * Jastrow factor from psi_jet_compose, reused by validity_jet
     DeviceArray<real> E_kin;         // B
     DeviceArray<real> l2_out;        // B
     DeviceArray<real> v3n_out;       // B
@@ -111,8 +112,8 @@ struct DeviceState {
     DeviceArray<uint8_t> rank2_ok;       // B, rank2_well_conditioned per walker
     DeviceArray<int> pair_ij;            // 2*ex_npairs
     DeviceArray<uint8_t> ex_active;      // B*3*npairs, dense slots
-    DeviceArray<real> xi_swap;           // ex_walkers*3*npairs * m_feat  (chunked)
-    DeviceArray<real> rho_swap;          // ex_walkers*3*npairs * K       (chunked)
+    DeviceArray<real> xi_swap;           // ex_w*3*npairs * m_feat  (chunked)
+    DeviceArray<real> rho_swap;          // ex_w*3*npairs * K       (chunked)
     DeviceArray<real> S_swap;            // B*3*npairs, S' per slot (full batch)
     DeviceArray<real> V_coul;            // B
     DeviceArray<real> V_nuc;             // B
@@ -133,8 +134,12 @@ struct DeviceState {
     DeviceArray<unsigned char> pack_d;               // Ns_max*9 + B*60 bytes
 
     DeviceNet h_net_d, rho_net_d, orb_net_d;
-    explicit DeviceState(const Ansatz& a, bool verbose = true, std::size_t B_walkers = 0, int records_max = records_per_iter_max);
+    // records_max sizes everything for the peak; O_pool starts with records_alloc records (records_max if negative)
+    explicit DeviceState(const Ansatz& a, bool verbose = true, std::size_t B_walkers = 0, int records_max = records_per_iter_max, int jet_chunk_walkers = jet_chunk, int records_alloc = -1);
 
+    // Make O_pool hold this many records; false if the allocation failed (O_pool then keeps its old size)
+    bool ensure_O_pool(int records);
+    
     // --- Allocate memory for the various device arrays, with optional verbose output --- //
     std::size_t total_bytes() const;
 

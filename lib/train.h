@@ -33,6 +33,7 @@ struct SRStepLog {
     double delta_norm = 0.0;      // Norm of the SR step delta
     double sq_metric_norm = 0.0;  // Norm of the square root metric (S^1/2) times the SR step delta
     bool norm_capped = false;     // Whether the SR step was capped by the trust region
+    double step_scale = 1.0;      // Applied step = step_scale * delta (trust region and norm cap); delta keeps the raw CG solution
 };
 
 // Stats from one round of sampling merging over all CPU and GPU walkers
@@ -55,6 +56,10 @@ public:
     
     virtual void initial_thermalization(const Ansatz& a) = 0;
     
+    virtual int prepare_records(int records) { 
+        return records; 
+    }
+
     virtual void sample(const Ansatz& a, int records, bool frozen, SampleStats& s) = 0;
 
     virtual void gradient(std::size_t n_samples, long long n_valid, const ClipStats& clip) = 0;

@@ -57,7 +57,7 @@ inline constexpr int therm_steps_init = 500;    // Thermalization steps upon ini
 inline constexpr int therm_init_blocks = 20;    // Initial thermalization is split into this many blocks, tune acceptance at end of each block
 inline constexpr double batch_grow_frac = 0.7;  // of all iterations (N_gd + N_sr)
 inline constexpr int batch_grow_factor = 2;     // Maximum batch growth
-inline constexpr int draws = N*dim;             // Number of times we draw a position in a Metropolis update before recording a sample
+inline constexpr int draws = N;                 // Whole-particle moves per sweep (each moves all dim coordinates of one particle)
 inline constexpr int spin_draws = N;            // Number of times we draw a spin in a Metropolis update before recording a sample
 inline constexpr int tau_draws = N;             // Number of times we draw an isospin in a Metropolis update before recording a sample
 inline constexpr double step0 = 1.0;            // Initial step size for the thread
@@ -67,7 +67,7 @@ inline constexpr double x_init_range = 2.0;     // Initial range of positions
 inline constexpr int walker_per_th = 290;           // Number of walkers per thread
 inline constexpr int records_per_iter = 2;       // Samples recorded per iteration
 inline constexpr int sweeps_between_records = 3;  // Decorrelation sweeps
-inline constexpr int therm_re_sweep = 3;          // Thermalization sweeps upon parameter update
+inline constexpr int therm_re_sweep = 0;          // Thermalization sweeps upon parameter update (the sweeps before record 0 suffice)
 
 inline constexpr int n_walkers = n_thread * walker_per_th;
 inline constexpr int records_per_iter_max = records_per_iter * batch_grow_factor;
@@ -76,7 +76,7 @@ inline constexpr unsigned long long rng_seed = 20260826ULL;
 inline constexpr unsigned long long init_seed = 1ULL;  // network weight initialisation
 static_assert(n_walkers % n_thread == 0);
 
-inline constexpr int jet_chunk = 0;
+inline constexpr int jet_chunk = n_walkers;    // Walkers per jet chunk (default of [gpu] jet_chunk); the jet buffers hold min(walkers, jet_chunk)
 inline constexpr double o_pool_max_gb = 12.0;  // Set cap of maximum amount of data O_pool may hold
 
 // Ansatz parameters

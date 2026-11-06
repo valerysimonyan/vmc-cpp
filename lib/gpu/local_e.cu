@@ -21,8 +21,8 @@ int eval_local_E_device(DeviceState& ds, cublasHandle_t handle, const Ansatz& a,
 
     {
         VMC_PROF("jet_pass", stream);
-        for (int w_off = 0; w_off < B; w_off += jet_walkers) {
-            const int Bc = std::min((int)jet_walkers, B - w_off);
+        for (int w_off = 0; w_off < B; w_off += ds.jet_w) {
+            const int Bc = std::min(ds.jet_w, B - w_off);
             eval_jet_chunk(ds, handle, Bc, w_off, B, stream);
         }
     }

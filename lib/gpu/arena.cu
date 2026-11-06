@@ -39,13 +39,14 @@ static void check_backprop_layout(const Ansatz& a, const DeviceNet& dn, const Ne
     (void)a;
 }
 
-DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers, int records_max) {
+DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers, int records_max, int jet_chunk_walkers, int records_alloc) {
     B = B_walkers ? B_walkers : (std::size_t)n_walkers;
     soft_cap = (B_walkers == 0);
     P = a.n_params();
     Ns_max = B * (std::size_t)records_max;
     rows_max = B * (std::size_t)N * (std::size_t)rows_per_combo;
     ex_w = (int)(rows_max / (std::size_t)(ex_types * ex_npairs));
+    jet_w = (int)std::min(B, (std::size_t)jet_chunk_walkers);
 
     // Check for issues with flattening parameters
     const std::size_t bad = check_param_layout(a);
@@ -70,11 +71,14 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers, i
         throw std::runtime_error(oss.str());
     }
 
+    // O_pool starts with records_alloc records and grows with ensure_O_pool
+    const std::size_t Ns_alloc = records_alloc < 0 ? Ns_max : B * (std::size_t)records_alloc;
+
     // How many bytes I want
     const std::size_t want =
           B*(std::size_t)D*sizeof(real) + 2*B*(std::size_t)N*sizeof(real)
         + B*sizeof(real) + B*sizeof(uint8_t) + B*sizeof(unsigned long long)
-        + P*sizeof(real) + Ns_max*sizeof(double) + Ns_max*P*sizeof(opool_t)
+        + P*sizeof(real) + Ns_max*sizeof(double) + Ns_alloc*P*sizeof(opool_t)
         + Ns_max*sizeof(uint8_t);
 
     // Try allocating thememory, if it fails print issue and throw an error
@@ -86,7 +90,7 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers, i
         rng_ctr.alloc(B);
         params.alloc(P);
         E_pool.alloc(Ns_max);
-        O_pool.alloc(Ns_max * P);
+        O_pool.alloc(Ns_alloc * P);
         if constexpr (fp32_forward) params_f.alloc(P);
         valid_pool.alloc(Ns_max);
     } catch (const std::exception& e) {
@@ -114,12 +118,28 @@ DeviceState::DeviceState(const Ansatz& a, bool verbose, std::size_t B_walkers, i
                     (double)params.bytes() / (1024.0*1024));
         std::printf("  E_pool + valid_pool            %8.3f MiB\n",
                     (double)(E_pool.bytes()+valid_pool.bytes()) / (1024.0*1024));
-        std::printf("  O_pool                         %8.3f GiB\n",
-                    (double)O_pool.bytes() / (1024.0*1024*1024));
+        std::printf("  O_pool                         %8.3f GiB  (grows to %.3f GiB)\n",
+                    (double)O_pool.bytes() / (1024.0*1024*1024), (double)(Ns_max * P * sizeof(opool_t)) / (1024.0*1024*1024));
         std::printf("  TOTAL                          %8.3f GiB  (cap %.1f GiB)\n",
                     (double)total_bytes() / (1024.0*1024*1024), o_pool_max_gb);        
     }
 }
+
+// Grow O_pool to this many records. Its contents are rewritten every iteration, so the old pool is freed first and nothing is copied. If the new size does not fit, put back the old size and return false
+bool DeviceState::ensure_O_pool(int records) {
+    const std::size_t want = B * (std::size_t)records * P;
+    if (O_pool.n >= want) return true;
+    const std::size_t old = O_pool.n;
+    try {
+        O_pool.alloc(want);
+        return true;
+    } catch (const std::exception&) {
+        cudaGetLastError();
+        O_pool.alloc(old);
+        return false;
+    }
+}
+
 // --- MEMORY ALLOCATION --- //
 // Return walker state memory in bytes
 std::size_t DeviceState::total_bytes() const {
@@ -210,7 +230,7 @@ void DeviceState::alloc_exchange(bool verbose) {
     const std::size_t per_w = (std::size_t)ex_types * ex_npairs;
     const std::size_t slots_chunk = (std::size_t)ex_w * per_w;
     if (ex_w < 1 || slots_chunk > rows_max)
-        throw std::runtime_error("DeviceState::alloc_exchange: ex_walkers chunk does not fit the alloc_eval ping-pong buffers");
+        throw std::runtime_error("DeviceState::alloc_exchange: ex_w chunk does not fit the alloc_eval ping-pong buffers");
 
     dets_psi.alloc((std::size_t)K * B);
     xi_psi.alloc(B * (std::size_t)m_feat);
@@ -287,8 +307,8 @@ std::size_t DeviceState::sampler_bytes() const {
 // Compute memory for jet networks
 void DeviceState::alloc_jet_nets(bool verbose) {
     const std::size_t C = (std::size_t)jet_C;
-    const std::size_t rows = jet_rows; 
-    const std::size_t W = (std::size_t)jet_walkers;
+    const std::size_t W = (std::size_t)jet_w;
+    const std::size_t rows = W * (std::size_t)N;
 
     // Take the largest hidden width
     const int hidden = std::max(1, std::max(std::max(h_net_d.hidden_width, rho_net_d.hidden_width), orb_net_d.hidden_width));
@@ -310,12 +330,11 @@ void DeviceState::alloc_jet_nets(bool verbose) {
         std::ostringstream oss;
         oss << "DeviceState::alloc_jet_nets: total would be " << grand_gb << " GiB, over the "
             << o_pool_max_gb << " GiB cap (o_pool_max_gb in constants.h).\n"
-            << "  The jet networks alone want " << (double)want/(1024.0*1024*1024) << " GiB at jet_chunk="
-            << jet_chunk << " (" << jet_walkers << " walkers).\n"
-            << "  REMEDY: set jet_chunk in constants.h to a fraction of n_walkers ("
+            << "  The jet networks alone want " << (double)want/(1024.0*1024*1024) << " GiB at " << jet_w << " walkers per jet chunk.\n"
+            << "  REMEDY: set [gpu] jet_chunk in the run file to a fraction of the walkers ("
             << B << "). The jet pipeline is walker-independent, so chunking is\n"
-            << "  exactly equivalent -- only GEMM row counts change. jet_chunk="
-            << (B/2) << " roughly halves the figure above.";
+            << "  exactly equivalent -- only GEMM row counts change. jet_chunk = "
+            << (jet_w/2) << " roughly halves the figure above.";
         throw std::runtime_error(oss.str());
     }
 
@@ -339,8 +358,8 @@ void DeviceState::alloc_jet_nets(bool verbose) {
 
     if (verbose) {
         auto mib = [](std::size_t b){ return (double)b/(1024.0*1024.0); };
-        std::printf("DeviceState::alloc_jet_nets: C=%d  jet_walkers=%d  rows=%zu  hidden=%d\n",
-                    jet_C, jet_walkers, rows, hidden);
+        std::printf("DeviceState::alloc_jet_nets: C=%d  jet_w=%d  rows=%zu  hidden=%d\n",
+                    jet_C, jet_w, rows, hidden);
         std::printf("  jet_feat                       %8.3f MiB\n", mib(jet_feat.bytes()));
         std::printf("  jet_h                          %8.3f MiB\n", mib(jet_h.bytes()));
         std::printf("  jet_xi + jet_rho               %8.3f MiB\n",
@@ -376,7 +395,7 @@ void DeviceState::alloc_jet_dets(bool verbose) {
     jet_det.alloc(C * W * (std::size_t)K);
     jet_psi.alloc(C * W);
     S_jet_v.alloc(W);
-    psi_dbl.alloc(W);
+    env_jet.alloc(W);
     E_kin.alloc(W);
     l2_out.alloc(W);
     v3n_out.alloc(W);
@@ -399,7 +418,7 @@ void DeviceState::alloc_jet_dets(bool verbose) {
                     mib(inv_ptrs.bytes()+inv_info.bytes()));
         std::printf("  jet_det                       %8.3f MiB\n", mib(jet_det.bytes()));
         std::printf("  jet_psi + per-walker outputs  %8.3f MiB\n",
-                    mib(jet_psi.bytes()+S_jet_v.bytes()+psi_dbl.bytes()
+                    mib(jet_psi.bytes()+S_jet_v.bytes()+env_jet.bytes()
                         +E_kin.bytes()+l2_out.bytes()+v3n_out.bytes()+valid_jet.bytes()));
         std::printf("  jet dets added                %8.3f MiB\n", mib(jet_det_bytes()));
         std::printf("  GRAND TOTAL                   %8.3f GiB  (cap %.1f GiB)\n",
@@ -408,7 +427,7 @@ void DeviceState::alloc_jet_dets(bool verbose) {
 }
 std::size_t DeviceState::jet_det_bytes() const {
     return Minv_batch.bytes() + inv_ptrs.bytes() + inv_info.bytes()
-         + jet_det.bytes() + jet_psi.bytes() + S_jet_v.bytes() + psi_dbl.bytes()
+         + jet_det.bytes() + jet_psi.bytes() + S_jet_v.bytes() + env_jet.bytes()
          + E_kin.bytes() + l2_out.bytes() + v3n_out.bytes() + valid_jet.bytes();
 }
 

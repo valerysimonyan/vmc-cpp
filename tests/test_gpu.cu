@@ -1026,17 +1026,18 @@ static void test_sampler_replay(const Ansatz& a, cublasHandle_t handle) {
             std::vector<int> idx(B);   ds.prop_idx.down(idx.data(), B);
             std::vector<real> xp((std::size_t)B*D); ds.x_prop.down(xp.data(), xp.size());
 
-            // The proposal must differ from the current state in EXACTLY the
-            // one logged coordinate. A commit-path bug that perturbed the wrong
-            // entry, or more than one, shows up here and nowhere else.
+            // The proposal must differ from the current state ONLY in the
+            // logged particle. A commit-path bug that perturbed the wrong
+            // particle, or more than one, shows up here and nowhere else.
             for (int w = 0; w < B; w++)
                 for (int d = 0; d < D; d++) {
                     const double got = (double)xp[(std::size_t)w*D + d];
-                    if (d == idx[w]) continue;
+                    if (d / dim == idx[w]) continue;
                     CHECK(got == hx[(std::size_t)w*D + d],
                           "replay: proposal changed coordinate " + std::to_string(d)
-                          + " but claimed index " + std::to_string(idx[w]));
+                          + " but claimed particle " + std::to_string(idx[w]));
                 }
+
 
             eval_logp_batch_prop(ds, handle, B, ds.x_prop.d, ds.S_prop.d, ds.logp_prop.d);
             std::vector<long long> before(B); ds.acc.down(before.data(), B);
@@ -1045,7 +1046,8 @@ static void test_sampler_replay(const Ansatz& a, cublasHandle_t handle) {
 
             for (int w = 0; w < B; w++)
                 if (after[w] != before[w])
-                    hx[(std::size_t)w*D + idx[w]] = (double)xp[(std::size_t)w*D + idx[w]];
+                    for (int k = 0; k < dim; k++)
+                        hx[(std::size_t)w*D + idx[w]*dim + k] = (double)xp[(std::size_t)w*D + idx[w]*dim + k];
         }
         recenter_device(ds, B);
         for (int w = 0; w < B; w++) {

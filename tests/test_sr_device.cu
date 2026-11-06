@@ -31,6 +31,14 @@ static double worst_rel(const std::vector<double>& got, const std::vector<double
         w = std::max(w, std::fabs(got[i] - want[i]) / std::max(1e-300, std::fabs(want[i])));
     return w;
 }
+static double worst_rel_floor(const std::vector<double>& got, const std::vector<double>& want) {
+    double amax = 0;
+    for (double x : want) amax = std::max(amax, std::fabs(x));
+    double w = 0;
+    for (std::size_t i = 0; i < want.size(); i++)
+        w = std::max(w, std::fabs(got[i] - want[i]) / std::max(1e-6 * amax, std::fabs(want[i])));
+    return w;
+}
 static std::vector<double> down(const DeviceArray<double>& d, std::size_t n) { std::vector<double> h(n); d.down(h.data(), n); return h; }
 static void up(DeviceArray<double>& d, const std::vector<double>& h) { if (d.n < h.size()) d.alloc(h.size()); d.up(h.data(), h.size()); }
 
@@ -253,8 +261,8 @@ static void test_sr_real(cublasHandle_t h, ThreadPool& pool, std::vector<Workspa
         std::vector<double> out_raw, out_damp;
         hop.apply(v, out_raw, true); hop.apply(v, out_damp, false);
         DeviceArray<double> dv, dout; up(dv, v); dout.alloc(P);
-        sr_apply(R1, P, nv, lambda_t, dv.d, dout.d, true);  const double wr = worst_rel(down(dout, P), out_raw);
-        sr_apply(R1, P, nv, lambda_t, dv.d, dout.d, false); const double wd = worst_rel(down(dout, P), out_damp);
+        sr_apply(R1, P, nv, lambda_t, dv.d, dout.d, true);  const double wr = worst_rel_floor(down(dout, P), out_raw);
+        sr_apply(R1, P, nv, lambda_t, dv.d, dout.d, false); const double wd = worst_rel_floor(down(dout, P), out_damp);
         std::printf("    S*v apply (sr_apply vs SROp::apply): raw rel %.2e   damped rel %.2e\n", wr, wd);
         // fp32_opool: same float-rounded values on both sides, but the device sums with the mixed-precision
         // kernels (32 slabs, then a tree) instead of cuBLAS -- a different order, magnified on entries with

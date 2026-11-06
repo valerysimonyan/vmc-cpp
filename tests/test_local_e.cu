@@ -188,7 +188,7 @@ static void test_exchange(const Ansatz& a, cublasHandle_t h) {
     // keep their rank-2 S' and the value check below passes even with the
     // fallback deleted (a negative control caught exactly that). B fits one slot
     // chunk, so rho_swap still holds this batch's rows.
-    if (B > ex_walkers) throw std::runtime_error("test_exchange: B must fit one exchange chunk");
+    if (B > dv.ds.ex_w) throw std::runtime_error("test_exchange: B must fit one exchange chunk");
     ex_S_swap(dv.ds.rho_swap.d, dv.ds.dets_psi.d, dv.ds.Minv_batch.d, dv.ds.orb_out.d, dv.ds.s.d, dv.ds.t.d,
               dv.ds.pair_ij.d, dv.ds.ex_active.d, dv.ds.rank2_ok.d, dv.ds.S_swap.d, B, 0);
     const int nf = ex_fallback_host(dv.ds, a, ws_dev, B);

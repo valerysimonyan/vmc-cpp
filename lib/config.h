@@ -31,6 +31,8 @@ struct GpuSettings {
     int max_util = 30;          // Planner: skip GPUs busier than this (%)
     int max_walkers = 0;        // Planner: cap on walkers per GPU (0: none)
     int min_walkers = 256;      // Planner: skip GPUs that fit fewer
+    int jet_chunk = ::jet_chunk;  // Walkers per jet chunk; the jet buffers (the largest after the O pool) hold min(walkers, jet_chunk)
+
 };
 
 // Run-time settings. Every default is the value in constants.h; a run file (INI) overrides any of them:

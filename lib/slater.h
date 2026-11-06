@@ -62,6 +62,7 @@ T lu_det(std::vector<T>& M, int n, std::vector<int>& piv_scratch){
 
 double lu_det_inv(std::vector<double>& M, int n, std::vector<double>& Minv, std::vector<int>& piv_scratch, std::vector<double>& col_scratch);
 
+Jet det_jet_given_inv(const Jet* Mjet, int n, double det_v, const double* Minv, std::vector<double>& G, std::vector<double>& B);
 Jet det_jet_from_minv(const Jet* Mjet, int n, std::vector<double>& Mval, std::vector<double>& Minv, std::vector<int>& piv, std::vector<double>& col_scratch, std::vector<double>& G, std::vector<double>& B);
 inline Jet det_jet_from_minv(const std::vector<Jet>& Mjet, int n, std::vector<double>& Mval, std::vector<double>& Minv, std::vector<int>& piv, std::vector<double>& col_scratch, std::vector<double>& G, std::vector<double>& B) {
     return det_jet_from_minv(Mjet.data(), n, Mval, Minv, piv, col_scratch, G, B);

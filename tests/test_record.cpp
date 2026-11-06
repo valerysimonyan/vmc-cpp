@@ -34,7 +34,7 @@ static double legacy_local_E(const std::vector<double>& x, const std::vector<dou
     for (int i = 0; i < K; i++) S += ws.drho[i] * ws.dets[i];
     if (!std::isfinite(S) || std::fabs(S) < 1e-290) { std::fill(O_out.begin(), O_out.end(), 0.0); return 0.0; }
 
-    Jet pj = jpsi(x, s, t, a, ws);
+    Jet pj = jpsi(x, s, t, a, ws, true);   // as local_E: reuse psi(need_inv)'s inverses
     bool mismatch = std::fabs(pj.v - dpsi) > 1e-6 * std::max(1.0, std::fabs(dpsi));
     if (!std::isfinite(pj.v) || std::fabs(pj.v) < 1e-290 || mismatch) { std::fill(O_out.begin(), O_out.end(), 0.0); return 0.0; }
 

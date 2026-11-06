@@ -51,35 +51,26 @@ SRStepLog SR_step(const std::vector<double>& grad, const std::vector<double>& O_
 
     // Check if raw (no lambda and eps) norm of (delta S delta) is within regulation
     sr_op.apply(delta, S_delta, true);
-    // Record step size, if step too large, clip
+
     double q = 0.0;
     for (std::size_t j = 0; j < n_params; j++) {
         q += delta[j] * S_delta[j];
     }
-    if (q > sr.trust_r2) {
-        double scale = std::sqrt(sr.trust_r2 / q);
-        for (std::size_t j = 0; j < n_params; j++) {
-            delta[j] *= scale;
-        }
-    }
-    
-    double delta_norm_raw = norm(delta);
+    double scale = 1.0;
+    if (q > sr.trust_r2) scale = std::sqrt(sr.trust_r2 / q); // Scale down delta to fit within trust region
+
+    // Compute raw norm, scale down if necessary
+    double delta_norm_raw = scale * norm(delta);
     bool norm_capped = delta_norm_raw > sr.delta_max; //Set to false for no cap on norm;
     if (norm_capped) {
-        double scale = sr.delta_max / delta_norm_raw;
-        for (std::size_t j = 0; j < n_params; j++) {
-            delta[j] *= scale;
-        }
-        std::cerr << "SR_step: norm cap triggered -- raw ||delta||=" << delta_norm_raw
-                   << " > sr_delta_max=" << sr.delta_max << ", rescaled.\n";
+        scale *= sr.delta_max / delta_norm_raw;
+        std::cerr << "SR_step: norm cap triggered -- raw ||delta||=" << delta_norm_raw << " > sr_delta_max=" << sr.delta_max << ", rescaled.\n";    
     }
-
     // Update parameters
     for (std::size_t j = 0; j < n_params; j++) {
-        a.add_to_param(j,- sr_lr * delta[j]);
+        a.add_to_param(j, -sr_lr * scale * delta[j]);
     }
-
-    return {lambda_t, cg.iters, cg.rel_residual, norm(delta), q, norm_capped};
+    return {lambda_t, cg.iters, cg.rel_residual, norm_capped ? sr.delta_max : delta_norm_raw, q, norm_capped, scale};
 }
 
 // Compute tau and spin acceptance rates here
@@ -95,8 +86,8 @@ static void batch_spin_tau_acceptance(const WalkerBatch& wb, int total_sweeps, d
 
 // Tune step
 static void tune_step(double acceptance, double& step) {
-    if (acceptance < 0.45) step *= 0.9;
-    else if (acceptance > 0.55) step *= 1.1;
+    if (acceptance < 0.30) step *= 0.9;
+    else if (acceptance > 0.40) step *= 1.1;
 }
 
 // Split thermalization into blocks, tune step size between blocks
@@ -201,13 +192,18 @@ public:
         const double acc = therm_batch(wb_, a, step_, cfg_.therm_sweeps, &pool_, wss_);
         const auto tB = std::chrono::steady_clock::now();
         
-        if (frozen) tune_step(acc, step_);
+        if (frozen && cfg_.therm_sweeps > 0) tune_step(acc, step_);
         record_batch(wb_, a, step_, records, &pool_, wss_, E_pool_, O_pool_, valid_pool_, bs_, cfg_.sweeps_between);
         const auto tC = std::chrono::steady_clock::now();
         batch_spin_tau_acceptance(wb_, total_sweeps, s.spin_acceptance, s.tau_acceptance);
-        if (!frozen) tune_step(acc, step_);
+
+        // Acceptance over every sweep of this iteration (therm and record sweeps), so it exists when therm_sweeps = 0
+        long long n_acc = 0;
+        for (int w = 0; w < wb_.B; w++) n_acc += wb_.acc[w];
+        const double acc_all = (double)n_acc / ((double)wb_.B * total_sweeps * draws);
+        if (!frozen) tune_step(acc_all, step_);
         
-        s.acceptance = acc;
+        s.acceptance = acc_all;
         s.bs = bs_;
         s.E_pool = E_pool_;
         s.valid_pool = valid_pool_;

@@ -106,7 +106,10 @@ static T eval_S(Workspace& ws, EvalBuffers<T>& buf, bool need_inv) {
     if constexpr (std::is_same_v<T, Jet>) {
         T S{};
         for (int k = 0; k < K; k++) {
-            const T det = det_jet_from_minv(&buf.M[slater_idx(k, 0, 0)], N, ws.jd_Mval, ws.jd_Minv, ws.jd_piv, ws.jd_col, ws.jd_G, ws.jd_B);
+            // need_inv here means the preceding psi(need_inv = true) left every det and inverse in ws.dets / ws.dMinv
+            const T det = !need_inv ? det_jet_from_minv(&buf.M[slater_idx(k, 0, 0)], N, ws.jd_Mval, ws.jd_Minv, ws.jd_piv, ws.jd_col, ws.jd_G, ws.jd_B)
+                        : ws.dets[k] == 0.0 ? T(0.0)
+                        : det_jet_given_inv(&buf.M[slater_idx(k, 0, 0)], N, ws.dets[k], &ws.dMinv[slater_idx(k, 0, 0)], ws.jd_G, ws.jd_B);
             S = S + buf.rho[k] * det;
         }
         return S;
@@ -163,8 +166,8 @@ double log_p (const double* x, const double* s, const double* t, const Ansatz& a
 }
 
 // Jet evaluation of psi
-Jet jpsi (const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws) {
-    return psi_impl<Jet>(x, s, t, a, ws, false);
+Jet jpsi (const double* x, const double* s, const double* t, const Ansatz& a, Workspace& ws, bool inv_ready) {
+    return psi_impl<Jet>(x, s, t, a, ws, inv_ready);
 }
 
 // Preompute h_net and orb_net for all values of spin and isospin
